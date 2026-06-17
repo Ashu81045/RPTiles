@@ -1,0 +1,6 @@
+{
+  "name": "RP Tiles",
+  "description": "Premium customer-facing showcase and expert management console with responsive tiling layouts, active warehouse stock tracking, and professional real-time POS billing.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
