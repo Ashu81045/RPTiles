@@ -10,7 +10,7 @@ import {
   Search, Plus, Minus, Trash2, Printer, FileText, 
   ShoppingCart, User, Phone, CheckCircle, CreditCard, 
   Receipt, Landmark, Coins, ChevronRight, Sparkles, X, Compass, MapPin,
-  IndianRupee, TrendingUp, History, QrCode
+  IndianRupee, TrendingUp, History, QrCode, Smartphone
 } from 'lucide-react';
 
 const LOCAL_STORAGE_INVOICES_KEY = 'ceramica_catalog_invoices';
@@ -105,6 +105,7 @@ const DEFAULT_INVOICES: Invoice[] = [
 interface BillingSystemProps {
   products: Product[];
   onUpdateStock: (id: string, quantity: number, type: 'IN' | 'OUT' | 'ADJUST', reason: string) => void;
+  onConnectPhone?: () => void;
 }
 
 interface CartItem {
@@ -136,7 +137,7 @@ interface Invoice {
   timestamp: string;
 }
 
-export default function BillingSystem({ products, onUpdateStock }: BillingSystemProps) {
+export default function BillingSystem({ products, onUpdateStock, onConnectPhone }: BillingSystemProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSubcategory, setSelectedSubcategory] = useState<string>('All');
   
@@ -166,7 +167,7 @@ export default function BillingSystem({ products, onUpdateStock }: BillingSystem
     type: 'idle'
   });
 
-  const [useRealCamera, setUseRealCamera] = useState(false);
+  const [useRealCamera, setUseRealCamera] = useState(true);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
   // Live Mobile/Phone Camera integration using html5-qrcode
@@ -193,19 +194,26 @@ export default function BillingSystem({ products, onUpdateStock }: BillingSystem
         let lastScannedTime = 0;
 
         html5QrCode.start(
-          { facingMode: "environment" }, // Prefer back camera (ideal for scanning product labels in showroom)
+          { 
+            facingMode: "environment",
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }, // Request High Definition video stream and back camera for high sharpness
           {
-            fps: 15,
+            fps: 30, // Double the frame capturing polling rate for scanning on the fly
             qrbox: (width, height) => {
               const minDimension = Math.min(width, height);
-              const size = Math.floor(minDimension * 0.72);
+              const size = Math.floor(minDimension * 0.85); // Generous 85% area target alignment area
               return { width: size, height: size };
             },
-          },
+            experimentalFeatures: {
+              useBarCodeDetectorIfSupported: true // Enable native Web API hardware acceleration on phones
+            }
+          } as any,
           (decodedText) => {
             const now = Date.now();
             if (decodedText === lastScannedText && (now - lastScannedTime) < 2200) {
-              // Throttle repeat scans
+              // Throttle repeat scans for the same item to prevent double checkouts
               return;
             }
             lastScannedText = decodedText;
@@ -627,29 +635,13 @@ export default function BillingSystem({ products, onUpdateStock }: BillingSystem
               
               <div className="flex items-center space-x-2">
                 {isScannerOpen && (
-                  <div className="bg-stone-800 p-0.5 rounded-lg flex border border-stone-700">
-                    <button
-                      type="button"
-                      onClick={() => setUseRealCamera(false)}
-                      className={`px-2 py-0.5 text-[8.5px] font-bold rounded transition-all uppercase ${!useRealCamera ? 'bg-amber-500 text-stone-950 font-black' : 'text-stone-400 hover:text-white'}`}
-                    >
-                      📟 Simulator
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCameraError(null);
-                        setUseRealCamera(true);
-                      }}
-                      className={`px-2 py-0.5 text-[8.5px] font-bold rounded transition-all uppercase flex items-center space-x-1 ${useRealCamera ? 'bg-emerald-500 text-white font-black' : 'text-stone-400 hover:text-white'}`}
-                    >
-                      <span className="relative flex h-1.5 w-1.5 mr-0.5">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-300"></span>
-                      </span>
-                      <span>📸 Active Camera</span>
-                    </button>
-                  </div>
+                  <span className="bg-emerald-950/60 border border-emerald-800/80 text-[8px] font-extrabold text-emerald-400 px-2 py-1 rounded uppercase tracking-wider flex items-center space-x-1">
+                    <span className="relative flex h-1.5 w-1.5 mr-1">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-300"></span>
+                    </span>
+                    <span>Camera Reader Active</span>
+                  </span>
                 )}
 
                 <button
@@ -706,81 +698,67 @@ export default function BillingSystem({ products, onUpdateStock }: BillingSystem
                   <p className="truncate flex-1 leading-tight">{scanStatus.text}</p>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
                   
-                  {/* Camera lens viewports (md:col-span-5) */}
-                  <div className="md:col-span-5 bg-stone-950 rounded-xl relative overflow-hidden h-32 flex flex-col items-center justify-center border border-stone-900">
-                    {useRealCamera ? (
-                      <div className="absolute inset-0 flex flex-col justify-end bg-stone-900 overflow-hidden">
-                        {/* The HTML5 Qr Code element target */}
-                        <div id="real-camera-scan-region" className="absolute inset-0 w-full h-full object-cover [&_video]:object-cover [&_video]:w-full [&_video]:h-full" />
-                        
-                        {/* Target alignment framing overlay */}
-                        <div className="absolute inset-x-7 inset-y-5 border border-dashed border-emerald-400 rounded-lg pointer-events-none z-10 flex items-center justify-center bg-transparent">
-                          <span className="w-5 h-[1.5px] bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.7)]"></span>
-                        </div>
-                        
-                        {/* Holographic glowing scan line sweep for high polish */}
-                        <div 
-                          className="absolute left-0 right-0 h-[1.5px] bg-emerald-400 shadow-[0_0_8px_#34d399] z-20 pointer-events-none" 
-                          style={{ animation: 'scanLineSweep 2.2s infinite linear' }}
-                        />
-
-                        {/* Scanner hint footer tag */}
-                        <div className="absolute bottom-1.5 inset-x-0 text-center z-20">
-                          <span className="bg-stone-950/80 backdrop-blur-md text-[7.5px] px-1.5 py-0.5 rounded text-emerald-400 font-mono tracking-wider border border-emerald-950">
-                            REAR CAMERA FEEDING...
-                          </span>
-                        </div>
+                  {/* Camera lens viewports (md:col-span-6) */}
+                  <div className="md:col-span-6 bg-stone-950 rounded-2xl relative overflow-hidden h-72 sm:h-80 flex flex-col items-center justify-center border border-stone-850 shadow-md">
+                    <div className="absolute inset-0 flex flex-col justify-end bg-stone-900 overflow-hidden">
+                      {/* The HTML5 Qr Code element target */}
+                      <div id="real-camera-scan-region" className="absolute inset-0 w-full h-full object-cover [&_video]:object-cover [&_video]:w-full [&_video]:h-full" />
+                      
+                      {/* Target alignment framing overlay with beautiful borders */}
+                      <div className="absolute inset-x-8 inset-y-8 border-2 border-dashed border-emerald-400 rounded-2xl pointer-events-none z-10 flex items-center justify-center bg-transparent">
+                        <span className="w-12 h-[2px] bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.9)] animate-pulse"></span>
                       </div>
-                    ) : (
-                      <>
-                        {/* Glowing green horizontal moving line representing laser scanner */}
-                        <div 
-                          className="absolute left-0 right-0 h-[2px] bg-emerald-400 shadow-[0_0_12px_#34d399] z-10" 
-                          style={{ animation: 'scanLineSweep 2.2s infinite linear' }}
-                        />
-                        
-                        {/* Scanning Aim cross-hair */}
-                        <div className="absolute inset-0 flex items-center justify-center opacity-30 pointer-events-none">
-                          <div className="w-6 h-6 border border-red-500 rounded-full flex items-center justify-center">
-                            <div className="w-2 h-2 bg-red-600 rounded-full" />
-                          </div>
-                        </div>
+                      
+                      {/* Holographic glowing scan line sweep for high polish */}
+                      <div 
+                        className="absolute left-0 right-0 h-[2px] bg-emerald-400 shadow-[0_0_12px_#34d399] z-20 pointer-events-none" 
+                        style={{ animation: 'scanLineSweep 2.2s infinite linear' }}
+                      />
 
-                        {/* Technical status tags in camera view */}
-                        <div className="absolute top-1.5 left-2 text-[7.5px] font-mono text-emerald-500 opacity-60 flex items-center space-x-1.5 whitespace-nowrap">
-                          <span className="h-1.5 w-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
-                          <span>SHOWROOM_LENS: ACTIVE</span>
-                          <span>[65Hz]</span>
-                        </div>
-
-                        <div className="absolute bottom-1.5 left-2 text-[7.5px] font-mono text-emerald-500 opacity-60">
-                          LASER: WEAK_650NM_EMISSION
-                        </div>
-
-                        {/* Real-time scanning feedback layout */}
-                        <div className="text-center z-10 text-white/90">
-                          <QrCode className="w-8 h-8 text-emerald-400/80 mx-auto animate-pulse" />
-                          <p className="text-[8.5px] font-mono tracking-widest text-[#9A7B56] mt-1 font-bold">AIM QR/BARCODE HERE</p>
-                        </div>
-                      </>
-                    )}
+                      {/* Scanner hint footer tag */}
+                      <div className="absolute bottom-3 inset-x-0 text-center z-20">
+                        <span className="bg-stone-950/80 backdrop-blur-md text-[9px] px-2.5 py-1 rounded-md text-emerald-400 font-mono tracking-wider border border-emerald-930">
+                          LIVE CAMERA VIEWPORT ACTIVE
+                        </span>
+                      </div>
+                    </div>
                   </div>
 
-                  {/* Manual Wedged Input controls (md:col-span-7) */}
-                  <div className="md:col-span-7 space-y-2 flex flex-col justify-between">
+                  {/* Manual Wedged Input controls (md:col-span-6) */}
+                  <div className="md:col-span-6 space-y-4 flex flex-col justify-between">
                     <div>
-                      <label className="block text-[10px] font-black text-stone-500 uppercase tracking-widest font-mono">
-                        {useRealCamera ? '📸 Camera Scan Controller' : '📟 POS Barcode Scanner Control'}
+                      <label className="block text-[10.5px] font-black text-stone-900 uppercase tracking-widest font-mono">
+                        📸 Camera Scan Controller
                       </label>
-                      <p className="text-[10px] text-stone-450 mt-0.5 leading-relaxed">
-                        {useRealCamera 
-                          ? 'Position your phone camera directly over any printed/displayed showroom product QR tag to register it in the current invoice bill.'
-                          : 'To add high-speed tiles or sanitaryware to this checkout bill instantly, position any item barcode SKU under the scanner.'}
+                      <p className="text-[11px] text-stone-500 mt-1 leading-relaxed">
+                        Position your phone camera directly over any printed/displayed showroom product QR tag to register it in the current invoice bill instantly.
                       </p>
                     </div>
-                    
+
+                    {/* Active call to connect real camera if function is provided */}
+                    {onConnectPhone && (
+                      <div className="bg-emerald-50/70 border border-emerald-150 rounded-xl p-3 flex items-center justify-between shadow-xs">
+                        <div className="flex items-center space-x-2.5">
+                          <div className="p-2 bg-emerald-100 rounded-xl text-emerald-700 shrink-0">
+                            <Smartphone className="w-4 h-4 animate-bounce" />
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-black uppercase text-emerald-850 block">Got Another Phone?</span>
+                            <span className="text-[9.5px] text-stone-500 block leading-tight mt-0.5">Show connection QR setup instructions</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={onConnectPhone}
+                          className="bg-emerald-600 hover:bg-emerald-700 hover:scale-[1.02] active:scale-[0.98] text-white px-2.5 py-1 rounded-lg text-[9.5px] font-black uppercase tracking-tight transition-all cursor-pointer shadow-xs whitespace-nowrap"
+                        >
+                          Show Connect QR
+                        </button>
+                      </div>
+                    )}
+
                     {/* Quick demo hotkeys representing fast clicking */}
                     <div>
                       <span className="text-[8.5px] font-bold uppercase text-stone-400 block mb-1">Click to simulate scanning under laser:</span>

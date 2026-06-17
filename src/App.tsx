@@ -13,8 +13,10 @@ import BillingSystem from './components/BillingSystem';
 import LandingPage from './components/LandingPage';
 import { 
   Building, BookOpen, Layers, Settings, AppWindow, Clock, 
-  RotateCcw, Info, Compass, HelpCircle, Package, Receipt, ArrowLeft
+  RotateCcw, Info, Compass, HelpCircle, Package, Receipt, ArrowLeft,
+  Smartphone, QrCode, X
 } from 'lucide-react';
+import QRCode from 'qrcode';
 
 const LOCAL_STORAGE_PRODUCTS_KEY = 'ceramica_catalog_products';
 const LOCAL_STORAGE_MOVEMENTS_KEY = 'ceramica_catalog_movements';
@@ -72,6 +74,10 @@ export default function App() {
   // Time state
   const [currentTime, setCurrentTime] = useState<string>('');
 
+  // Mobile connect state
+  const [showConnectModal, setShowConnectModal] = useState<boolean>(false);
+  const [connectQrUrl, setConnectQrUrl] = useState<string>('');
+
   useEffect(() => {
     // Load products
     const savedProducts = localStorage.getItem(LOCAL_STORAGE_PRODUCTS_KEY);
@@ -126,6 +132,28 @@ export default function App() {
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
+
+  // Dynamically generate the mobile connection QR Code when modal opens
+  useEffect(() => {
+    if (showConnectModal) {
+      // Build the target absolute URL targeting the POS bill scanner directly
+      const targetUrl = window.location.origin + window.location.pathname + '#admin?tab=billing';
+      QRCode.toDataURL(targetUrl, {
+        margin: 2,
+        width: 250,
+        color: {
+          dark: '#0f172a', // slate-900 / premium dark luxury slate color
+          light: '#ffffff'
+        }
+      })
+      .then(url => {
+        setConnectQrUrl(url);
+      })
+      .catch(err => {
+        console.error('Failed generating app access QR:', err);
+      });
+    }
+  }, [showConnectModal]);
 
   // Update localStorage when lists change
   const saveToLocalStorage = (newProducts: Product[]) => {
@@ -529,6 +557,15 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => setShowConnectModal(true)}
+            className="flex items-center space-x-1 px-3 py-1.5 text-xs text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-250 rounded-xl font-bold transition-all cursor-pointer shadow-sm"
+            title="Scan custom showroom barcodes using your mobile phone camera!"
+          >
+            <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Connect Phone</span>
+          </button>
+
+          <button
             id="btn-factory-reset"
             onClick={handleFactoryReset}
             className="flex items-center space-x-1 px-3 py-1.5 text-xs text-stone-500 hover:text-stone-900 border border-stone-200 rounded-xl hover:bg-stone-50 transition-all cursor-pointer"
@@ -650,6 +687,7 @@ export default function App() {
           <BillingSystem
             products={products}
             onUpdateStock={handleUpdateStock}
+            onConnectPhone={() => setShowConnectModal(true)}
           />
         )}
       </main>
@@ -673,6 +711,126 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* 📱 CONNECT PHONE SCANNER MODAL OVERLAY */}
+      {showConnectModal && (
+        <div 
+          className="fixed inset-0 bg-stone-950/70 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fadeIn"
+          onClick={() => setShowConnectModal(false)}
+        >
+          <div 
+            className="bg-white rounded-3xl border border-stone-150 shadow-2xl max-w-md w-full overflow-hidden relative animate-scaleUp text-stone-900"
+            onClick={(e) => e.stopPropagation()} // Stop closing click bubbling
+          >
+            {/* Elegant luxury gold header accent line */}
+            <div className="h-1.5 w-full bg-gradient-to-r from-amber-500 via-[#9A7B56] to-stone-900" />
+            
+            {/* Close button top right */}
+            <button 
+              onClick={() => setShowConnectModal(false)}
+              className="absolute top-4 right-4 bg-stone-100 hover:bg-stone-200 text-stone-500 hover:text-stone-900 p-1.5 rounded-full transition-all cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="p-6 md:p-8 text-center">
+              {/* Phone and Qr Code layered badge */}
+              <div className="relative mx-auto w-14 h-14 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-600 mb-4 border border-emerald-150">
+                <Smartphone className="w-7 h-7" />
+                <span className="absolute -bottom-1 -right-1 bg-amber-500 text-stone-950 rounded-full p-1 border-2 border-white">
+                  <QrCode className="w-3.5 h-3.5" />
+                </span>
+              </div>
+
+              <h3 className="text-lg font-serif font-black text-stone-950 tracking-tight leading-snug">
+                Connect Your Phone Camera
+              </h3>
+              <p className="text-xs text-stone-500 mt-1.5 max-w-xs mx-auto leading-relaxed">
+                Seamlessly scan vitrified/floor stone sample labels on your mobile device to test showroom checkout capabilities.
+              </p>
+
+              {/* Holographic Glowing QR Code viewport */}
+              <div className="my-6 relative inline-block p-4 bg-stone-50 rounded-2xl border border-stone-200/80 shadow-inner">
+                {/* Simulated scan frame alignment crosshairs */}
+                <div className="absolute top-2 left-2 w-3 h-3 border-t-2 border-l-2 border-amber-500 rounded-tl" />
+                <div className="absolute top-2 right-2 w-3 h-3 border-t-2 border-r-2 border-amber-500 rounded-tr" />
+                <div className="absolute bottom-2 left-2 w-3 h-3 border-b-2 border-l-2 border-amber-500 rounded-bl" />
+                <div className="absolute bottom-2 right-2 w-3 h-3 border-b-2 border-r-2 border-amber-500 rounded-br" />
+
+                {connectQrUrl ? (
+                  <img 
+                    src={connectQrUrl} 
+                    alt="Scan to open on phone" 
+                    className="w-48 h-48 mx-auto mix-blend-multiply" 
+                  />
+                ) : (
+                  <div className="w-48 h-48 bg-stone-100 flex items-center justify-center text-stone-400 font-mono text-xs animate-pulse rounded">
+                    Rendering access code...
+                  </div>
+                )}
+              </div>
+
+              {/* Step-by-Step guides */}
+              <div className="text-left bg-stone-50 rounded-xl p-4 border border-stone-150 space-y-3.5 text-[11px] leading-relaxed">
+                <div className="flex items-start space-x-2.5">
+                  <span className="w-4.5 h-4.5 bg-stone-900 text-white font-black rounded-full flex items-center justify-center shrink-0">1</span>
+                  <p className="text-stone-750 font-medium pt-0.5">
+                    Open your iPhone or Android standard camera lens and aim straight at the code.
+                  </p>
+                </div>
+                
+                <div className="flex items-start space-x-2.5">
+                  <span className="w-4.5 h-4.5 bg-stone-900 text-white font-black rounded-full flex items-center justify-center shrink-0">2</span>
+                  <p className="text-stone-750 font-medium pt-0.5">
+                    Tap the popup link to launch this RP Tiles application securely over HTTPS.
+                  </p>
+                </div>
+
+                <div className="flex items-start space-x-2.5">
+                  <span className="w-4.5 h-4.5 bg-stone-900 text-white font-black rounded-full flex items-center justify-center shrink-0">3</span>
+                  <p className="text-stone-750 font-medium pt-0.5">
+                    Head to <strong className="text-stone-950 font-extrabold text-[11.5px]">POS Billing Desk</strong>, click <strong className="text-emerald-700">🔌 Power On</strong>, switch to <strong className="text-emerald-700">📸 Active Camera</strong> and start scanning showroom item tags!
+                  </p>
+                </div>
+              </div>
+
+              {/* Alternative clipboard link button */}
+              <div className="mt-5 pt-4 border-t border-stone-100 flex flex-col space-y-2">
+                <p className="text-[10px] text-stone-400 font-mono">OR LAUNCH VIA KEY DIRECT LINK:</p>
+                <div className="flex items-center space-x-1">
+                  <input 
+                    type="text" 
+                    readOnly 
+                    value={window.location.origin + window.location.pathname + '#admin?tab=billing'}
+                    className="flex-1 bg-stone-50 border border-stone-205 rounded-lg px-2.5 py-1 text-[9.5px] font-mono text-stone-600 select-all outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(window.location.origin + window.location.pathname + '#admin?tab=billing');
+                      alert("Copied custom Direct Phone link to your clipboard!");
+                    }}
+                    className="bg-stone-900 hover:bg-stone-950 text-white px-3 py-1 rounded-lg text-[10px] font-bold transition-all whitespace-nowrap cursor-pointer"
+                  >
+                    Copy Link
+                  </button>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Bottom active status bar */}
+            <div className="bg-stone-950 text-stone-400 text-[10px] font-mono py-2.5 px-4 flex items-center justify-between border-t border-stone-900">
+              <span className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                <span className="h-1.5 w-1.5 bg-emerald-400 rounded-full animate-ping"></span>
+                PREVIEW HOST ACTIVE
+              </span>
+              <span>RP-SYS-v2.6</span>
+            </div>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );
