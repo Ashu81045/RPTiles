@@ -5,16 +5,19 @@
 
 import { useState } from 'react';
 import { Product, VisualizationSettings } from '../types';
+import { Language, TRANSLATIONS } from '../data/translations';
 import { Layers, Maximize, Paintbrush, Sliders, LayoutGrid, Sparkles } from 'lucide-react';
 
 interface TileVisualizerProps {
   products: Product[];
+  language: Language;
   selectedProduct?: Product;
   onSelectProduct?: (product: Product) => void;
 }
 
 export default function TileVisualizer({
   products,
+  language,
   selectedProduct,
   onSelectProduct
 }: TileVisualizerProps) {

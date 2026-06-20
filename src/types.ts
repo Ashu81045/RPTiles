@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type Category = 'Tiles' | 'Bathware' | 'Sanitaryware' | 'Fittings';
+export type Category = 'Tiles' | 'Bathware' | 'Sanitaryware' | 'Fittings' | 'Marble';
 
 export interface Product {
   id: string;

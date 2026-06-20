@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { Product } from '../types';
+import { Language, TRANSLATIONS } from '../data/translations';
 import { 
   Building, ShieldCheck, Compass, MapPin, Phone, Mail, 
   HelpCircle, ChevronRight, Layers, Sparkles, Star, ArrowRight,
@@ -14,11 +15,12 @@ import {
 
 interface LandingPageProps {
   products: Product[];
+  language: Language;
   onOpenVisualizer: (product: Product) => void;
   onNavigateToAdmin: (tab?: 'catalog' | 'visualizer' | 'inventory' | 'billing') => void;
 }
 
-export default function LandingPage({ products, onOpenVisualizer, onNavigateToAdmin }: LandingPageProps) {
+export default function LandingPage({ products, language, onOpenVisualizer, onNavigateToAdmin }: LandingPageProps) {
   const [selectedInquiryTile, setSelectedInquiryTile] = useState<Product | null>(null);
   const [inquirySubmitted, setInquirySubmitted] = useState(false);
   

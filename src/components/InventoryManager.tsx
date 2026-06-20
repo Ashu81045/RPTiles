@@ -5,6 +5,7 @@
 
 import { useState, FormEvent, useEffect } from 'react';
 import { Product, Category, StockMovement } from '../types';
+import { Language, TRANSLATIONS } from '../data/translations';
 import { 
   Plus, Minus, TrendingUp, AlertTriangle, Package, IndianRupee, 
   Trash2, Edit, Save, RotateCcw, PlusCircle, Check, HelpCircle, X, Download,
@@ -64,6 +65,7 @@ export function SkuQrCode({ sku, size = 130 }: SkuQrCodeProps) {
 
 interface InventoryManagerProps {
   products: Product[];
+  language: Language;
   movements: StockMovement[];
   onAddProduct: (payload: Omit<Product, 'id'>) => void;
   onUpdateProduct: (p: Product) => void;
@@ -73,6 +75,7 @@ interface InventoryManagerProps {
 
 export default function InventoryManager({
   products,
+  language,
   movements,
   onAddProduct,
   onUpdateProduct,
@@ -179,7 +182,7 @@ export default function InventoryManager({
     setFormImage(p.image);
     setFormGroutSuggestion(p.groutSuggestion || '');
     setFormBoxCoverage(p.boxCoverage?.toString() || '0');
-    setFormSellUnitBasis(p.sellUnitBasis || (p.category === 'Tiles' ? 'sqft' : 'pcs'));
+    setFormSellUnitBasis(p.sellUnitBasis || (p.category === 'Tiles' || p.category === 'Marble' ? 'sqft' : 'pcs'));
     setFormItemsPerBox(p.itemsPerBox?.toString() || '4');
     setFormWeightPerBox(p.weightPerBox?.toString() || '22.5');
     setIsFormOpen(true);
@@ -328,7 +331,7 @@ export default function InventoryManager({
               <div className="border-b border-black w-full" />
             </div>
 
-            {(['Tiles', 'Bathware', 'Sanitaryware', 'Fittings'] as Category[]).map(cat => {
+            {(['Tiles', 'Bathware', 'Sanitaryware', 'Fittings', 'Marble'] as Category[]).map(cat => {
               const val = categorySummary[cat] || 0;
               const count = categoryCounts[cat] || 0;
               // Determine height percentage relative to total valuation or maximum value
@@ -820,7 +823,7 @@ export default function InventoryManager({
                     onChange={(e) => {
                       const cat = e.target.value as Category;
                       setFormCategory(cat);
-                      setFormUnit(cat === 'Tiles' ? 'sqft' : 'pcs');
+                      setFormUnit(cat === 'Tiles' || cat === 'Marble' ? 'sqft' : 'pcs');
                     }}
                     className="w-full h-9.5 rounded-lg border border-stone-200 px-2.5 bg-white outline-none focus:ring-1 focus:ring-amber-500"
                   >
@@ -828,6 +831,7 @@ export default function InventoryManager({
                     <option value="Bathware">Bathware (Bathtubs & Showers)</option>
                     <option value="Sanitaryware">Sanitaryware (Closets & Basins)</option>
                     <option value="Fittings">Fittings (Taps, Faucets & Sinks)</option>
+                    <option value="Marble">Marble (Slabs, Blocks & Tiles)</option>
                   </select>
                 </div>
 

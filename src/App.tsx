@@ -10,13 +10,16 @@ import CatalogView from './components/CatalogView';
 import TileVisualizer from './components/TileVisualizer';
 import InventoryManager from './components/InventoryManager';
 import BillingSystem from './components/BillingSystem';
+import CustomerLedger from './components/CustomerLedger';
 import LandingPage from './components/LandingPage';
+import AdminLogin from './components/AdminLogin';
 import { 
   Building, BookOpen, Layers, Settings, AppWindow, Clock, 
   RotateCcw, Info, Compass, HelpCircle, Package, Receipt, ArrowLeft,
-  Smartphone, QrCode, X
+  Smartphone, QrCode, X, DollarSign, LogOut
 } from 'lucide-react';
 import QRCode from 'qrcode';
+import { Language, TRANSLATIONS } from './data/translations';
 
 const LOCAL_STORAGE_PRODUCTS_KEY = 'ceramica_catalog_products';
 const LOCAL_STORAGE_MOVEMENTS_KEY = 'ceramica_catalog_movements';
@@ -56,11 +59,19 @@ const INITIAL_MOVEMENTS: StockMovement[] = [
 ];
 
 export default function App() {
+  // Global active language setup for Indian localization
+  const [language, setLanguage] = useState<Language>(() => {
+    return (localStorage.getItem('ceramica_language') as Language) || 'en';
+  });
+
   // Support state-based routing + URL Hash sync
   const [currentView, setCurrentView] = useState<'landing' | 'admin'>(() => {
     return window.location.hash.startsWith('#admin') ? 'admin' : 'landing';
   });
-  const [activeTab, setActiveTab] = useState<'catalog' | 'visualizer' | 'inventory' | 'billing'>('catalog');
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
+    return sessionStorage.getItem('ceramica_admin_logged_in') === 'true';
+  });
+  const [activeTab, setActiveTab] = useState<'catalog' | 'visualizer' | 'inventory' | 'billing' | 'ledger'>('catalog');
   // Public sub-tabs: Home overview, digital showroom catalog, interactive tiling simulator
   const [publicTab, setPublicTab] = useState<'home' | 'showroom' | 'visualizer'>('home');
   
@@ -83,7 +94,16 @@ export default function App() {
     const savedProducts = localStorage.getItem(LOCAL_STORAGE_PRODUCTS_KEY);
     if (savedProducts) {
       try {
-        setProducts(JSON.parse(savedProducts));
+        const parsed: Product[] = JSON.parse(savedProducts);
+        const existingIds = new Set(parsed.map(p => p.id));
+        const missingDefaults = DEFAULT_PRODUCTS.filter(dp => !existingIds.has(dp.id));
+        if (missingDefaults.length > 0) {
+          const merged = [...parsed, ...missingDefaults];
+          setProducts(merged);
+          localStorage.setItem(LOCAL_STORAGE_PRODUCTS_KEY, JSON.stringify(merged));
+        } else {
+          setProducts(parsed);
+        }
       } catch (e) {
         setProducts(DEFAULT_PRODUCTS);
       }
@@ -167,7 +187,7 @@ export default function App() {
   };
 
   // Switch hash route helper
-  const navigateWithHash = (view: 'landing' | 'admin', tab?: 'catalog' | 'visualizer' | 'inventory' | 'billing') => {
+  const navigateWithHash = (view: 'landing' | 'admin', tab?: 'catalog' | 'visualizer' | 'inventory' | 'billing' | 'ledger') => {
     if (view === 'admin') {
       const targetTab = tab || activeTab;
       window.location.hash = `admin?tab=${targetTab}`;
@@ -317,6 +337,21 @@ export default function App() {
   };
 
   // Render Client Landing Showroom or Executive Management Admin Console
+  if (currentView === 'admin' && !isAdminAuthenticated) {
+    return (
+      <AdminLogin
+        language={language}
+        onLoginSuccess={() => {
+          setIsAdminAuthenticated(true);
+          sessionStorage.setItem('ceramica_admin_logged_in', 'true');
+        }}
+        onCancel={() => {
+          navigateWithHash('landing');
+        }}
+      />
+    );
+  }
+
   if (currentView === 'landing') {
     return (
       <div className="min-h-screen flex flex-col justify-between bg-stone-50" id="landing-container">
@@ -381,13 +416,36 @@ export default function App() {
               </button>
             </div>
 
-            {/* Quick action redirecting directly to specific hash paths */}
-            <div className="flex items-center space-x-3 self-end lg:self-auto">
+            {/* Language switcher + Enter Admin Console button */}
+            <div className="flex items-center space-x-3.5 self-end lg:self-auto">
+              {/* Language switcher pills */}
+              <div className="flex items-center space-x-1 border border-stone-200/80 p-1 rounded-xl bg-stone-50 select-none shadow-3xs" id="lang-switcher-landing">
+                {(['en', 'hi', 'hinglish'] as const).map((l) => {
+                  const labels = { en: 'EN', hi: 'हिंदी', hinglish: 'Hinglish' };
+                  return (
+                    <button
+                      key={l}
+                      onClick={() => {
+                        setLanguage(l);
+                        localStorage.setItem('ceramica_language', l);
+                      }}
+                      className={`px-2.5 py-1 text-[10.5px] font-bold rounded-lg transition-all cursor-pointer ${
+                        language === l
+                          ? 'bg-stone-950 text-amber-400 shadow-sm'
+                          : 'text-stone-600 hover:text-stone-950 hover:bg-stone-200/50'
+                      }`}
+                    >
+                      {labels[l]}
+                    </button>
+                  );
+                })}
+              </div>
+
               <button
                 onClick={() => navigateWithHash('admin', 'catalog')}
                 className="px-4 py-2 text-xs font-bold bg-stone-950 text-white rounded-xl hover:bg-stone-900 shadow-sm transition-all flex items-center space-x-2 cursor-pointer"
               >
-                <span>Enter Admin Console & POS</span>
+                <span>{TRANSLATIONS[language].accessPos}</span>
               </button>
             </div>
 
@@ -398,6 +456,7 @@ export default function App() {
         {publicTab === 'home' && (
           <LandingPage 
             products={products} 
+            language={language}
             onOpenVisualizer={handleLandingTriggerVisualizer}
             onNavigateToAdmin={(tab) => {
               if (tab === 'catalog') {
@@ -434,6 +493,7 @@ export default function App() {
               </div>
               <CatalogView 
                 products={products} 
+                language={language}
                 onOpenVisualizer={handleLandingTriggerVisualizer} 
               />
             </div>
@@ -482,6 +542,7 @@ export default function App() {
               </div>
               <TileVisualizer 
                 products={products} 
+                language={language}
                 selectedProduct={visualizeProduct} 
                 onSelectProduct={setVisualizeProduct} 
               />
@@ -547,8 +608,31 @@ export default function App() {
           <span>{currentTime || 'Showroom Terminal'}</span>
         </div>
 
-        {/* Factory Reset Tool Shortcut */}
-        <div className="flex items-center space-x-2">
+        {/* Factory Reset Tool Shortcut & Language Selector */}
+        <div className="flex items-center space-x-2.5">
+          {/* Admin panel language pills */}
+          <div className="flex items-center space-x-1 border border-stone-250 p-0.5 rounded-lg bg-stone-50 select-none text-[10px]" id="lang-switcher-admin">
+            {(['en', 'hi', 'hinglish'] as const).map((l) => {
+              const labels = { en: 'EN', hi: 'हिंदी', hinglish: 'Hinglish' };
+              return (
+                <button
+                  key={l}
+                  onClick={() => {
+                    setLanguage(l);
+                    localStorage.setItem('ceramica_language', l);
+                  }}
+                  className={`px-2 py-0.5 font-bold rounded transition-all cursor-pointer ${
+                    language === l
+                      ? 'bg-stone-900 text-amber-400 shadow-3xs text-[10px]'
+                      : 'text-stone-500 hover:text-stone-900'
+                  }`}
+                >
+                  {labels[l]}
+                </button>
+              );
+            })}
+          </div>
+
           <button
             onClick={() => navigateWithHash('landing')}
             className="hidden sm:flex items-center space-x-1 px-3 py-1.5 text-xs text-stone-600 hover:text-stone-900 font-bold hover:bg-stone-50 transition-all cursor-pointer"
@@ -574,6 +658,20 @@ export default function App() {
             <RotateCcw className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Reset Defaults</span>
           </button>
+
+          <button
+            id="btn-admin-logout"
+            onClick={() => {
+              setIsAdminAuthenticated(false);
+              sessionStorage.removeItem('ceramica_admin_logged_in');
+              navigateWithHash('landing');
+            }}
+            className="flex items-center space-x-1 px-3 py-1.5 text-xs text-rose-700 hover:text-rose-900 border border-rose-200 bg-rose-50/50 hover:bg-rose-50 rounded-xl transition-all cursor-pointer font-bold"
+            title="Safely end administrative session"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Log Out</span>
+          </button>
         </div>
       </header>
 
@@ -592,7 +690,7 @@ export default function App() {
             }`}
           >
             <BookOpen className="w-4 h-4 text-amber-400" />
-            <span>Digital Showroom</span>
+            <span>{TRANSLATIONS[language].digitalShowroom}</span>
           </button>
 
           {/* Visualizer tab */}
@@ -613,7 +711,7 @@ export default function App() {
             }`}
           >
             <Layers className="w-4 h-4 text-emerald-400" />
-            <span>Interactive Tiling Studio</span>
+            <span>{TRANSLATIONS[language].tilingStudio}</span>
           </button>
 
           {/* Inventory tab */}
@@ -627,7 +725,7 @@ export default function App() {
             }`}
           >
             <Package className="w-4 h-4 text-sky-400" />
-            <span>Warehouse Inventory Console</span>
+            <span>{TRANSLATIONS[language].warehouseInventory}</span>
           </button>
 
           {/* New POS Billing System tab */}
@@ -641,7 +739,21 @@ export default function App() {
             }`}
           >
             <Receipt className="w-4 h-4 text-rose-400" />
-            <span>POS Billing Desk</span>
+            <span>{TRANSLATIONS[language].posBilling}</span>
+          </button>
+
+          {/* Customer Ledger Book tab */}
+          <button
+            id="tab-ledger"
+            onClick={() => navigateWithHash('admin', 'ledger')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 ${
+              activeTab === 'ledger'
+                ? 'bg-stone-900 text-white shadow-sm'
+                : 'text-stone-650 hover:bg-stone-50 hover:text-stone-950'
+            }`}
+          >
+            <DollarSign className="w-4 h-4 text-emerald-400" />
+            <span>{TRANSLATIONS[language].customerLedger}</span>
           </button>
         </div>
 
@@ -651,6 +763,7 @@ export default function App() {
           {activeTab === 'visualizer' && '📐 Change layout offsets, rotations and grout color mixers instantly.'}
           {activeTab === 'inventory' && '📊 Quick restock alerts and transactional audits logged securely.'}
           {activeTab === 'billing' && '🧾 Cart updates immediately subtract stock units with tax invoice printouts.'}
+          {activeTab === 'ledger' && '💼 View historical outstanding client debt registers and issue cash clears.'}
         </div>
       </nav>
 
@@ -659,6 +772,7 @@ export default function App() {
         {activeTab === 'catalog' && (
           <CatalogView
             products={products}
+            language={language}
             onOpenVisualizer={handleTriggerVisualizer}
             onUpdateProductStock={handleDirectStockUpdate}
           />
@@ -667,6 +781,7 @@ export default function App() {
         {activeTab === 'visualizer' && (
           <TileVisualizer
             products={products}
+            language={language}
             selectedProduct={visualizeProduct}
             onSelectProduct={setVisualizeProduct}
           />
@@ -675,6 +790,7 @@ export default function App() {
         {activeTab === 'inventory' && (
           <InventoryManager
             products={products}
+            language={language}
             movements={movements}
             onAddProduct={handleAddProduct}
             onUpdateProduct={handleUpdateProduct}
@@ -686,8 +802,16 @@ export default function App() {
         {activeTab === 'billing' && (
           <BillingSystem
             products={products}
+            language={language}
             onUpdateStock={handleUpdateStock}
             onConnectPhone={() => setShowConnectModal(true)}
+          />
+        )}
+
+        {activeTab === 'ledger' && (
+          <CustomerLedger
+            products={products}
+            language={language}
           />
         )}
       </main>

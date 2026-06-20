@@ -5,10 +5,11 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Product } from '../types';
+import { Language, TRANSLATIONS } from '../data/translations';
 import { Html5Qrcode } from 'html5-qrcode';
 import { 
   Search, Plus, Minus, Trash2, Printer, FileText, 
-  ShoppingCart, User, Phone, CheckCircle, CreditCard, 
+  ShoppingCart, User, Phone, CheckCircle, CreditCard, Book,
   Receipt, Landmark, Coins, ChevronRight, Sparkles, X, Compass, MapPin,
   IndianRupee, TrendingUp, History, QrCode, Smartphone
 } from 'lucide-react';
@@ -29,7 +30,8 @@ const DEFAULT_INVOICES: Invoice[] = [
         quantity: 500,
         unit: 'sqft',
         size: '60x120 cm',
-        total: 2425
+        total: 2425,
+        discountAmount: 0
       },
       {
         productName: 'Nero Portoro Marble Pedestal Basin',
@@ -38,7 +40,8 @@ const DEFAULT_INVOICES: Invoice[] = [
         quantity: 1,
         unit: 'pcs',
         size: '90x45 cm',
-        total: 1450
+        total: 1450,
+        discountAmount: 0
       }
     ],
     subtotal: 3875,
@@ -48,7 +51,12 @@ const DEFAULT_INVOICES: Invoice[] = [
     taxAmount: 662.625,
     grandTotal: 4343.875,
     paymentMethod: 'UPI',
-    timestamp: '2026-06-15T14:30:00.000Z'
+    timestamp: '2026-06-15T14:30:00.000Z',
+    loadingCharges: 0,
+    labourCharges: 0,
+    otherCharges: 0,
+    paidAmount: 4343.875,
+    dueAmount: 0
   },
   {
     invoiceNumber: 'RPT-INV-2606-1294',
@@ -63,7 +71,8 @@ const DEFAULT_INVOICES: Invoice[] = [
         quantity: 800,
         unit: 'sqft',
         size: '30x60 cm',
-        total: 3160
+        total: 3160,
+        discountAmount: 0
       }
     ],
     subtotal: 3160,
@@ -73,7 +82,12 @@ const DEFAULT_INVOICES: Invoice[] = [
     taxAmount: 568.8,
     grandTotal: 3728.8,
     paymentMethod: 'Bank Transfer',
-    timestamp: '2026-06-16T09:15:00.000Z'
+    timestamp: '2026-06-16T09:15:00.000Z',
+    loadingCharges: 0,
+    labourCharges: 0,
+    otherCharges: 0,
+    paidAmount: 3728.8,
+    dueAmount: 0
   },
   {
     invoiceNumber: 'RPT-INV-2606-9043',
@@ -88,7 +102,8 @@ const DEFAULT_INVOICES: Invoice[] = [
         quantity: 200,
         unit: 'sqft',
         size: '60x120 cm',
-        total: 970
+        total: 970,
+        discountAmount: 0
       }
     ],
     subtotal: 970,
@@ -98,12 +113,18 @@ const DEFAULT_INVOICES: Invoice[] = [
     taxAmount: 157.14,
     grandTotal: 1030.14,
     paymentMethod: 'Cash',
-    timestamp: '2026-06-17T11:00:00.000Z'
+    timestamp: '2026-06-17T11:00:00.000Z',
+    loadingCharges: 0,
+    labourCharges: 0,
+    otherCharges: 0,
+    paidAmount: 1030.14,
+    dueAmount: 0
   }
 ];
 
 interface BillingSystemProps {
   products: Product[];
+  language: Language;
   onUpdateStock: (id: string, quantity: number, type: 'IN' | 'OUT' | 'ADJUST', reason: string) => void;
   onConnectPhone?: () => void;
 }
@@ -111,6 +132,9 @@ interface BillingSystemProps {
 interface CartItem {
   product: Product;
   quantity: number;
+  remark?: string;
+  customPrice?: number;     // Customized item price per unit
+  customDiscount?: number;  // Customized discount percentage (0-100) per item
 }
 
 interface Invoice {
@@ -126,6 +150,9 @@ interface Invoice {
     unit: string;
     size: string;
     total: number;
+    remark?: string;
+    productImage?: string;
+    discountAmount?: number;
   }[];
   subtotal: number;
   discountRate: number; // e.g. 10 for 10%
@@ -135,9 +162,85 @@ interface Invoice {
   grandTotal: number;
   paymentMethod: string;
   timestamp: string;
+  // Extra charges
+  loadingCharges: number;
+  labourCharges: number;
+  otherCharges: number;
+  otherChargesRemarks?: string;
+  // Part payments
+  paidAmount: number;
+  dueAmount: number;
 }
 
-export default function BillingSystem({ products, onUpdateStock, onConnectPhone }: BillingSystemProps) {
+function numberToIndianWords(num: number): string {
+  if (isNaN(num)) return '';
+  const rounded = Math.round(num);
+  if (rounded === 0) return 'Rupees Zero Only';
+
+  const a = [
+    '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
+    'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'
+  ];
+  const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+  const g = (val: number): string => {
+    if (val < 20) return a[val];
+    const digit = val % 10;
+    return b[Math.floor(val / 10)] + (digit ? ' ' + a[digit] : '');
+  };
+
+  const convertLessThanOneThousand = (val: number): string => {
+    let result = '';
+    const hundreds = Math.floor(val / 100);
+    const remainder = val % 100;
+    if (hundreds) {
+      result += a[hundreds] + ' Hundred';
+    }
+    if (remainder) {
+      if (result) result += ' and ';
+      result += g(remainder);
+    }
+    return result;
+  };
+
+  let result = '';
+  let temp = rounded;
+  
+  const crores = Math.floor(temp / 10000000);
+  temp %= 10000000;
+  
+  const lakhs = Math.floor(temp / 100000);
+  temp %= 100000;
+  
+  const thousands = Math.floor(temp / 1000);
+  temp %= 1000;
+  
+  if (crores) {
+    result += convertLessThanOneThousand(crores) + ' Crore ';
+  }
+  if (lakhs) {
+    result += convertLessThanOneThousand(lakhs) + ' Lakh ';
+  }
+  if (thousands) {
+    result += convertLessThanOneThousand(thousands) + ' Thousand ';
+  }
+  if (temp) {
+    result += convertLessThanOneThousand(temp);
+  }
+
+  return 'Rupees ' + result.trim() + ' Only';
+}
+
+const getHsnCode = (sku: string, category?: string) => {
+  const cat = category?.toLowerCase() || '';
+  const skuUpper = sku.toUpperCase();
+  if (skuUpper.startsWith('TL') || cat === 'tiles') return '6907.21';
+  if (skuUpper.startsWith('SW') || cat === 'sanitaryware' || cat === 'bathware') return '6910.10';
+  if (skuUpper.startsWith('FT') || cat === 'fittings') return '8481.80';
+  return '6907.00';
+};
+
+export default function BillingSystem({ products, language, onUpdateStock, onConnectPhone }: BillingSystemProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSubcategory, setSelectedSubcategory] = useState<string>('All');
   
@@ -148,9 +251,16 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerAddress, setCustomerAddress] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Card' | 'UPI' | 'Bank Transfer'>('Cash');
+  const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Card' | 'UPI' | 'Bank Transfer' | 'Credit'>('Cash');
   const [discountPercent, setDiscountPercent] = useState<number>(0);
   const [gstPercent, setGstPercent] = useState<number>(18); // Default real-world GST/tax for premium tiling
+
+  // Extra ad-hoc charges and part-payments state
+  const [loadingCharges, setLoadingCharges] = useState<number>(0);
+  const [labourCharges, setLabourCharges] = useState<number>(0);
+  const [otherCharges, setOtherCharges] = useState<number>(0);
+  const [otherChargesRemarks, setOtherChargesRemarks] = useState<string>('');
+  const [paidAmountInput, setPaidAmountInput] = useState<string>('');
 
   // Receipt Modal State
   const [currentInvoice, setCurrentInvoice] = useState<Invoice | null>(null);
@@ -158,6 +268,15 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
 
   // Invoices Register & Sub-Tabs State
   const [billingSubTab, setBillingSubTab] = useState<'checkout' | 'insights'>('checkout');
+
+  // Calculator states for active item (Marble Slab L×W vs Tile Wastage carton calculators)
+  const [openedCalcId, setOpenedCalcId] = useState<string | null>(null);
+  const [calcMode, setCalcMode] = useState<'slab' | 'wastage'>('slab');
+  const [slabLength, setSlabLength] = useState<string>('6.5');
+  const [slabWidth, setSlabWidth] = useState<string>('4.0');
+  const [slabCount, setSlabCount] = useState<string>('10');
+  const [targetArea, setTargetArea] = useState<string>('150');
+  const [wastagePercent, setWastagePercent] = useState<string>('10');
   
   // Real-time Barcode / QR Code Scanner Simulation states
   const [isScannerOpen, setIsScannerOpen] = useState(true);
@@ -169,6 +288,34 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
 
   const [useRealCamera, setUseRealCamera] = useState(true);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [availableCameras, setAvailableCameras] = useState<any[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
+
+  // Auto-detect and fetch all physical camera devices on the phone
+  useEffect(() => {
+    if (!isScannerOpen || !useRealCamera) return;
+    Html5Qrcode.getCameras()
+      .then((devices) => {
+        if (devices && devices.length > 0) {
+          setAvailableCameras(devices);
+          // Try to auto-select a rear-facing camera first
+          const rearCam = devices.find(d => 
+            d.label.toLowerCase().includes('back') || 
+            d.label.toLowerCase().includes('rear') || 
+            d.label.toLowerCase().includes('environment') ||
+            d.label.toLowerCase().includes('0')
+          );
+          if (rearCam) {
+            setSelectedCameraId(rearCam.id);
+          } else {
+            setSelectedCameraId(devices[0].id);
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn("Retrying/fetching camera devices failed:", err);
+      });
+  }, [isScannerOpen, useRealCamera]);
 
   // Live Mobile/Phone Camera integration using html5-qrcode
   useEffect(() => {
@@ -193,47 +340,87 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
         let lastScannedText = "";
         let lastScannedTime = 0;
 
+        // Custom call-back when QR is detected
+        const onScanSuccess = (decodedText: string) => {
+          const now = Date.now();
+          if (decodedText === lastScannedText && (now - lastScannedTime) < 2200) {
+            // Throttle repeat scans for the same item to prevent double checkouts
+            return;
+          }
+          lastScannedText = decodedText;
+          lastScannedTime = now;
+          
+          // Execute product code scanning match
+          handleScannerScan(decodedText);
+        };
+
+        const onScanFailure = (errorMessage: string) => {
+          // Silence frame-by-frame debug failure callbacks
+        };
+
+        // Determine target lens configuration
+        // If a specific camera is chosen, use it. Otherwise, request back camera specifically.
+        const cameraConfig = selectedCameraId ? selectedCameraId : { facingMode: "environment" };
+
+        // Attempt ultra-fast scanning first
         html5QrCode.start(
-          { 
-            facingMode: "environment",
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          }, // Request High Definition video stream and back camera for high sharpness
+          cameraConfig,
           {
-            fps: 30, // Double the frame capturing polling rate for scanning on the fly
+            fps: 30, // Poll more frequently for scan on-the-fly
             qrbox: (width, height) => {
               const minDimension = Math.min(width, height);
-              const size = Math.floor(minDimension * 0.85); // Generous 85% area target alignment area
+              const size = Math.floor(minDimension * 0.85); // Big scan box
               return { width: size, height: size };
             },
             experimentalFeatures: {
-              useBarCodeDetectorIfSupported: true // Enable native Web API hardware acceleration on phones
+              useBarCodeDetectorIfSupported: true // Native hardware detector on Safari/Chrome Mobile
             }
           } as any,
-          (decodedText) => {
-            const now = Date.now();
-            if (decodedText === lastScannedText && (now - lastScannedTime) < 2200) {
-              // Throttle repeat scans for the same item to prevent double checkouts
-              return;
-            }
-            lastScannedText = decodedText;
-            lastScannedTime = now;
-            
-            // Execute product code scanning match
-            handleScannerScan(decodedText);
-          },
-          (errorMessage) => {
-            // Silence frame-by-frame debug failure callbacks
-          }
+          onScanSuccess,
+          onScanFailure
         ).catch((err) => {
-          console.error("Camera permissions check or camera start failed:", err);
-          setCameraError("Failed! Please grant Camera permission in your phone/browser settings to scan QR Codes.");
-          setUseRealCamera(false);
+          console.warn("High-speed constraints rejected, checking for permission issue first:", err);
+          
+          const errStr = String(err);
+          const isPermissionError = 
+            err?.name === 'NotAllowedError' || 
+            err?.name === 'PermissionDeniedError' || 
+            errStr.includes('NotAllowedError') || 
+            errStr.includes('Permission denied') || 
+            errStr.includes('PermissionDeniedError');
+
+          if (isPermissionError) {
+            console.warn("Camera permission explicitly denied or blocked by browser environment:", err);
+            setCameraError(
+              "Failed! Please grant Camera permission in your phone/browser settings. Note: If you are previewing inside the developer editor/chat workspace, please copy/open the Shared App URL directly in Chrome/Safari on your device, or click 'Connect Phone' above to scan with your phone's native browser."
+            );
+            return;
+          }
+
+          // Retry with simple constraints to bypass OverconstrainedError
+          if (html5QrCode) {
+            html5QrCode.start(
+              cameraConfig,
+              {
+                fps: 20,
+                qrbox: (w, h) => {
+                  const s = Math.floor(Math.min(w, h) * 0.85);
+                  return { width: s, height: s };
+                }
+              } as any,
+              onScanSuccess,
+              onScanFailure
+            ).catch((innerErr) => {
+              console.error("Camera start failed on second attempt:", innerErr);
+              setCameraError(
+                "Failed! Please grant Camera permission in your phone/browser settings. Note: If you are previewing inside the developer editor/chat workspace, please copy/open the Shared App URL directly in Chrome/Safari on your device, or click 'Connect Phone' above to scan with your phone's native browser."
+              );
+            });
+          }
         });
       } catch (ex: any) {
         console.error("html5-qrcode constructor exception:", ex);
         setCameraError("Camera device failed to initiate on this screen.");
-        setUseRealCamera(false);
       }
     }, 450);
 
@@ -253,7 +440,7 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
         }
       }
     };
-  }, [useRealCamera, isScannerOpen]);
+  }, [useRealCamera, isScannerOpen, selectedCameraId]);
 
   // Sound Synth Beep Generator for hand-held register mock feedback
   const playScanBeep = () => {
@@ -336,6 +523,80 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
     }
     return DEFAULT_INVOICES;
   });
+
+  // Customer Ledger directory search and lookup
+  const [payments, setPayments] = useState<any[]>([]);
+  const [ledgerSearch, setLedgerSearch] = useState('');
+  const [showLedgerDropdown, setShowLedgerDropdown] = useState(false);
+
+  useEffect(() => {
+    const syncPayments = () => {
+      const saved = localStorage.getItem('ceramica_catalog_customer_payments');
+      if (saved) {
+        try {
+          setPayments(JSON.parse(saved));
+        } catch (_) {}
+      } else {
+        setPayments([]);
+      }
+    };
+    syncPayments();
+    window.addEventListener('storage', syncPayments);
+    return () => {
+      window.removeEventListener('storage', syncPayments);
+    };
+  }, []);
+
+  // Compute unique customers and balances
+  const customersSummaryList = useMemo(() => {
+    const map: Record<string, { name: string; phone: string; address: string; totalBilled: number; totalPaid: number }> = {};
+
+    const getCustomerKey = (name: string, phone: string) => {
+      const cleanPhone = phone.trim();
+      const cleanName = name.trim();
+      return cleanPhone && cleanPhone !== 'N/A' && cleanPhone !== '' ? cleanPhone : `NAME:${cleanName.toLowerCase()}`;
+    };
+
+    invoices.forEach(inv => {
+      const key = getCustomerKey(inv.customerName, inv.customerPhone);
+      if (!map[key]) {
+        map[key] = {
+          name: inv.customerName,
+          phone: inv.customerPhone,
+          address: inv.customerAddress,
+          totalBilled: 0,
+          totalPaid: 0
+        };
+      }
+      map[key].totalBilled += inv.grandTotal;
+      if (inv.paymentMethod !== 'Credit' && inv.paymentMethod !== 'Pay Later') {
+        map[key].totalPaid += inv.grandTotal;
+      }
+    });
+
+    payments.forEach(pay => {
+      const key = getCustomerKey(pay.customerName, pay.customerPhone);
+      if (!map[key]) {
+        map[key] = {
+          name: pay.customerName,
+          phone: pay.customerPhone,
+          address: 'Payment Account Only',
+          totalBilled: 0,
+          totalPaid: 0
+        };
+      }
+      if (pay.type === 'debit') {
+        map[key].totalBilled += pay.amount;
+      } else {
+        map[key].totalPaid += pay.amount;
+      }
+    });
+
+    return Object.values(map).map(c => ({
+      ...c,
+      outstanding: Math.round((c.totalBilled - c.totalPaid) * 100) / 100
+    }));
+  }, [invoices, payments]);
 
   // Business Insights Calculations
   const insights = useMemo(() => {
@@ -456,21 +717,60 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
     setCart(prev => prev.filter(item => item.product.id !== productId));
   };
 
+  // Direct Cart Qty setter
+  const handleSetCartQty = (productId: string, val: number) => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+    if (val < 0) val = 0;
+    
+    if (val > product.stock) {
+      alert(`Warehouse stock warning! Only ${product.stock} ${product.unit} are available in total.`);
+      val = product.stock;
+    }
+
+    setCart(prev => prev.map(item => {
+      if (item.product.id === productId) {
+        return { ...item, quantity: val };
+      }
+      return item;
+    }));
+  };
+
+  const handleUpdateCustomPrice = (productId: string, price: number) => {
+    setCart(prev => prev.map(item => item.product.id === productId ? { ...item, customPrice: price } : item));
+  };
+
+  const handleUpdateCustomDiscount = (productId: string, discountPct: number) => {
+    setCart(prev => prev.map(item => item.product.id === productId ? { ...item, customDiscount: discountPct } : item));
+  };
+
   // Calculations
   const calculatedTotals = useMemo(() => {
-    const subtotal = cart.reduce((sum, item) => sum + (item.product.price * item.quantity), 0);
+    const subtotal = cart.reduce((sum, item) => {
+      const price = item.customPrice !== undefined ? item.customPrice : item.product.price;
+      const discountPct = item.customDiscount !== undefined ? item.customDiscount : 0;
+      const lineSubtotal = price * item.quantity;
+      const lineDiscount = (lineSubtotal * discountPct) / 100;
+      return sum + (lineSubtotal - lineDiscount);
+    }, 0);
+
     const discountAmount = (subtotal * discountPercent) / 100;
     const taxableAmount = subtotal - discountAmount;
     const taxAmount = (taxableAmount * gstPercent) / 100;
-    const grandTotal = taxableAmount + taxAmount;
+    const extraCharges = loadingCharges + labourCharges + otherCharges;
+    const grandTotal = taxableAmount + taxAmount + extraCharges;
 
     return {
       subtotal,
       discountAmount,
       taxAmount,
+      extraCharges,
       grandTotal
     };
-  }, [cart, discountPercent, gstPercent]);
+  }, [cart, discountPercent, gstPercent, loadingCharges, labourCharges, otherCharges]);
+
+  const actualPaidAmount = paidAmountInput === '' ? calculatedTotals.grandTotal : (parseFloat(paidAmountInput) || 0);
+  const calculatedDueAmount = Math.max(0, calculatedTotals.grandTotal - actualPaidAmount);
 
   // Process and Submit Real Invoice
   const handleProcessAndPay = (e: React.FormEvent) => {
@@ -503,15 +803,24 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
       customerName: customerName.trim() || 'Valued Walk-In Client',
       customerPhone: customerPhone.trim() || 'N/A',
       customerAddress: customerAddress.trim() || 'Counter Sale (RP Tiles Showroom, Araria)',
-      items: cart.map(item => ({
-        productName: item.product.name,
-        sku: item.product.sku,
-        price: item.product.price,
-        quantity: item.quantity,
-        unit: item.product.unit,
-        size: item.product.size,
-        total: item.product.price * item.quantity
-      })),
+      items: cart.map(item => {
+        const itemPrice = item.customPrice !== undefined ? item.customPrice : item.product.price;
+        const itemDiscount = item.customDiscount !== undefined ? item.customDiscount : 0;
+        const lineSubtotal = itemPrice * item.quantity;
+        const lineDiscountAmount = (lineSubtotal * itemDiscount) / 100;
+        return {
+          productName: item.product.name,
+          sku: item.product.sku,
+          price: itemPrice,
+          quantity: item.quantity,
+          unit: item.product.unit,
+          size: item.product.size,
+          total: lineSubtotal - lineDiscountAmount,
+          remark: item.remark,
+          productImage: item.product.image,
+          discountAmount: lineDiscountAmount
+        };
+      }),
       subtotal: calculatedTotals.subtotal,
       discountRate: discountPercent,
       discountAmount: calculatedTotals.discountAmount,
@@ -519,7 +828,17 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
       taxAmount: calculatedTotals.taxAmount,
       grandTotal: calculatedTotals.grandTotal,
       paymentMethod,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      
+      // Extra charges
+      loadingCharges: loadingCharges,
+      labourCharges: labourCharges,
+      otherCharges: otherCharges,
+      otherChargesRemarks: otherChargesRemarks.trim() || undefined,
+      
+      // Part payments deposition
+      paidAmount: actualPaidAmount,
+      dueAmount: calculatedDueAmount
     };
 
     // Substract Stock counts permanently from Main Inventory!
@@ -545,6 +864,11 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
     setCustomerPhone('');
     setCustomerAddress('');
     setDiscountPercent(0);
+    setLoadingCharges(0);
+    setLabourCharges(0);
+    setOtherCharges(0);
+    setOtherChargesRemarks('');
+    setPaidAmountInput('');
   };
 
   const handlePrint = () => {
@@ -553,64 +877,61 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
 
   return (
     <div className="space-y-6" id="billing-container">
-      {/* Overview Intro Banner */}
-      <div className="bg-stone-900 text-stone-100 rounded-3xl p-6 shadow-md flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden border border-stone-800" id="pos-banner">
-        <div className="absolute top-0 right-0 w-96 h-96 bg-amber-500/5 rounded-full blur-3xl -mr-32 -mt-32"></div>
-        <div className="z-10 text-center md:text-left">
-          <div className="flex items-center justify-center md:justify-start space-x-2 text-amber-400 font-mono text-xs uppercase tracking-widest mb-1.5">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Digital POS Station</span>
+      {/* Overview Intro Banner - Highly clean, professional and corporate */}
+      <div className="bg-white text-stone-900 rounded-2xl p-5 border border-stone-200 flex flex-col sm:flex-row items-center justify-between gap-4 relative overflow-hidden" id="pos-banner">
+        <div className="flex items-center space-x-3.5">
+          <div className="p-3 bg-stone-50 rounded-xl text-stone-900 border border-stone-250 shrink-0">
+            <Receipt className="w-5 h-5 text-amber-600" />
           </div>
-          <h2 className="text-2xl font-serif font-semibold tracking-tight text-white mb-2">Real-Time Commercial Billing Desk</h2>
-          <p className="text-stone-400 text-xs max-w-xl leading-relaxed">
-            Search items seamlessly, confirm active warehouse inventory balances, insert customer profiles, and process tax-compliant invoices. Quantities are instantly decremented from the master inventory records.
-          </p>
+          <div>
+            <h2 className="text-base font-bold tracking-tight text-stone-900">Showroom Sales Counter</h2>
+            <p className="text-stone-500 text-xs mt-0.5 leading-relaxed">
+              Create GST-compliant retail invoices. Quantities will automatically adjust inside stock registries upon finalization.
+            </p>
+          </div>
         </div>
-        <div className="z-10 flex gap-4 bg-stone-850/70 p-4 rounded-2xl border border-stone-800 backdrop-blur">
-          <div className="text-center px-2">
-            <p className="text-[10px] text-stone-400 font-mono tracking-wider uppercase mb-1">POS Sales Status</p>
-            <div className="flex items-center text-xs font-bold text-emerald-400 space-x-1 justify-center">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-              <span>LIVE TAX SERVER</span>
+        <div className="flex gap-3 shrink-0">
+          <div className="bg-stone-50 border border-stone-200 py-1 px-2.5 rounded-lg text-center">
+            <div className="flex items-center text-[10.5px] font-medium text-stone-700 gap-1.5 justify-center">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span>Ledger Sync</span>
             </div>
           </div>
         </div>
       </div>
 
       {/* Sub-Navigation Tabs */}
-      <div className="flex border-b border-stone-200/80 gap-6 mt-2" id="billing-subtabs">
+      <div className="flex border-b border-stone-200 gap-6 mt-2" id="billing-subtabs">
         <button
           onClick={() => setBillingSubTab('checkout')}
-          className={`pb-3 text-xs font-bold transition-all relative flex items-center space-x-1.5 cursor-pointer ${
+          className={`pb-3 text-xs font-semibold transition-all relative flex items-center space-x-1.5 cursor-pointer ${
             billingSubTab === 'checkout'
-              ? 'text-stone-900 border-b-2 border-amber-500 font-extrabold'
+              ? 'text-stone-900 border-b-2 border-stone-900 font-bold font-sans'
               : 'text-stone-400 hover:text-stone-600'
           }`}
         >
-          <ShoppingCart className="w-3.5 h-3.5" />
-          <span>New Sale Checkout</span>
+          <ShoppingCart className="w-3.5 h-3.5 text-stone-500" />
+          <span>New Invoice Checkout</span>
         </button>
         <button
           id="btn-pos-insights"
           onClick={() => setBillingSubTab('insights')}
-          className={`pb-3 text-xs font-bold transition-all relative flex items-center space-x-1.5 cursor-pointer ${
+          className={`pb-3 text-xs font-semibold transition-all relative flex items-center space-x-1.5 cursor-pointer ${
             billingSubTab === 'insights'
-              ? 'text-stone-900 border-b-2 border-amber-500 font-extrabold'
+              ? 'text-stone-900 border-b-2 border-stone-900 font-bold font-sans'
               : 'text-stone-400 hover:text-stone-600'
           }`}
         >
-          <History className="w-3.5 h-3.5" />
-          <span>Invoices History & Business Insights ({invoices.length})</span>
+          <History className="w-3.5 h-3.5 text-stone-500" />
+          <span>Invoices History ({invoices.length})</span>
         </button>
       </div>
 
       {billingSubTab === 'checkout' ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6" id="pos-grid">
         
-        {/* Left Column: Product Selection Catalog Section (lg:col-span-7) */}
+        {/* Left Column: Product Catalog Section (lg:col-span-7) */}
         <div className="lg:col-span-7 space-y-4" id="pos-search-panel">
-
-          {/* Virtual High-Speed Barcode / QR Code wedged cash-register POS Scanner */}
           <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden shadow-sm">
             {/* Inline Scanner Animations Style sheet */}
             <style>{`
@@ -622,156 +943,157 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
             `}</style>
 
             {/* Header / Config Bar */}
-            <div className="bg-stone-900 px-4 py-2.5 flex items-center justify-between text-white border-b border-stone-850">
+            <div className="bg-stone-900 px-4 py-3 flex items-center justify-between text-white border-b border-stone-800">
               <div className="flex items-center space-x-2">
                 <span className="flex h-2 w-2 relative">
-                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isScannerOpen ? 'bg-emerald-400' : 'bg-red-400'}`}></span>
-                  <span className={`relative inline-flex rounded-full h-2 w-2 ${isScannerOpen ? 'bg-emerald-500' : 'bg-red-500'}`}></span>
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isScannerOpen ? 'bg-emerald-400' : 'bg-stone-500'}`}></span>
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${isScannerOpen ? 'bg-emerald-400' : 'bg-stone-400'}`}></span>
                 </span>
-                <span className="text-[10.5px] font-black uppercase font-sans tracking-wide">
-                  Showroom QR/SKU Scanner Terminal
+                <span className="text-xs font-bold uppercase tracking-wider font-sans">
+                  Camera Barcode Scanner
                 </span>
               </div>
               
-              <div className="flex items-center space-x-2">
-                {isScannerOpen && (
-                  <span className="bg-emerald-950/60 border border-emerald-800/80 text-[8px] font-extrabold text-emerald-400 px-2 py-1 rounded uppercase tracking-wider flex items-center space-x-1">
-                    <span className="relative flex h-1.5 w-1.5 mr-1">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-300"></span>
-                    </span>
-                    <span>Camera Reader Active</span>
-                  </span>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsScannerOpen(!isScannerOpen);
-                    playScanBeep();
-                  }}
-                  className={`px-2 py-1 text-[9px] rounded-md font-bold transition-all uppercase tracking-tight border cursor-pointer ${
-                    isScannerOpen 
-                      ? 'bg-stone-850 hover:bg-stone-950 border-stone-700 text-stone-300' 
-                      : 'bg-emerald-600 hover:bg-emerald-700 border-emerald-500 text-white'
-                  }`}
-                >
-                  <span>{isScannerOpen ? '📶 Power Off' : '🔌 Power On'}</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsScannerOpen(!isScannerOpen);
+                  playScanBeep();
+                }}
+                className={`px-3 py-1 text-xs rounded-lg font-medium transition-all cursor-pointer border ${
+                  isScannerOpen 
+                    ? 'bg-stone-800 hover:bg-stone-700 border-stone-700 text-stone-200' 
+                    : 'bg-emerald-600 hover:bg-emerald-700 border-emerald-500 text-white'
+                }`}
+              >
+                <span>{isScannerOpen ? 'Turn Off Camera' : 'Turn On Camera'}</span>
+              </button>
             </div>
 
             {isScannerOpen && (
-              <div className="p-4 bg-stone-50/50 space-y-3 font-sans text-xs">
+              <div className="p-4 bg-stone-50 space-y-4 font-sans text-xs">
                 {/* Camera Permission/Fail Error banner */}
                 {cameraError && (
-                  <div className="bg-rose-50 border border-rose-250 rounded-xl p-2.5 text-rose-850 text-[10.5px] font-sans flex items-start space-x-2 animate-pulse">
-                    <span className="text-rose-600 font-extrabold text-[11px] uppercase tracking-wider block">⚠️ Connection Error:</span>
+                  <div className="bg-rose-50 border border-rose-250 rounded-xl p-3 text-rose-800 text-[11px] font-sans flex items-start space-x-3">
+                    <span className="text-rose-700 font-bold uppercase tracking-wider shrink-0">Note:</span>
                     <p className="flex-1 leading-normal font-medium">{cameraError}</p>
                     <button
                       type="button"
                       onClick={() => setCameraError(null)}
-                      className="text-[10px] underline font-bold hover:text-stone-900 ml-1.5 cursor-pointer bg-transparent border-none"
+                      className="text-[10px] font-bold text-stone-500 hover:text-stone-900 ml-1.5 cursor-pointer bg-transparent border-none"
                     >
                       Dismiss
                     </button>
                   </div>
                 )}
 
-                {/* Active scan results feed banner */}
+                {/* Active scan status */}
                 <div className={`p-2.5 rounded-xl border flex items-center space-x-2 transition-all duration-300 ${
                   scanStatus.type === 'success' 
-                    ? 'bg-emerald-50 border-emerald-250 text-emerald-850 font-semibold' 
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-medium' 
                     : scanStatus.type === 'error'
-                    ? 'bg-rose-50 border-rose-250 text-rose-850 font-semibold'
-                    : 'bg-stone-900 border-stone-850 text-stone-400 font-mono text-[10.5px]'
+                    ? 'bg-rose-50 border-rose-200 text-rose-900 font-medium'
+                    : 'bg-stone-900 border-stone-800 text-stone-300 font-mono text-[11px]'
                 }`}>
-                  <div className="flex-shrink-0">
-                    {scanStatus.type === 'success' ? (
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block animate-ping" />
-                    ) : scanStatus.type === 'error' ? (
-                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 inline-block" />
-                    ) : (
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block animate-ping" />
-                    )}
-                  </div>
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${scanStatus.type === 'success' ? 'bg-emerald-500 animate-pulse' : scanStatus.type === 'error' ? 'bg-rose-500' : 'bg-amber-400 animate-pulse'}`} />
                   <p className="truncate flex-1 leading-tight">{scanStatus.text}</p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
                   
-                  {/* Camera lens viewports (md:col-span-6) */}
-                  <div className="md:col-span-6 bg-stone-950 rounded-2xl relative overflow-hidden h-72 sm:h-80 flex flex-col items-center justify-center border border-stone-850 shadow-md">
+                  {/* Camera viewports */}
+                  <div className="md:col-span-6 bg-stone-950 rounded-xl relative overflow-hidden h-64 flex flex-col items-center justify-center border border-stone-800 shadow-sm">
                     <div className="absolute inset-0 flex flex-col justify-end bg-stone-900 overflow-hidden">
-                      {/* The HTML5 Qr Code element target */}
                       <div id="real-camera-scan-region" className="absolute inset-0 w-full h-full object-cover [&_video]:object-cover [&_video]:w-full [&_video]:h-full" />
                       
                       {/* Target alignment framing overlay with beautiful borders */}
-                      <div className="absolute inset-x-8 inset-y-8 border-2 border-dashed border-emerald-400 rounded-2xl pointer-events-none z-10 flex items-center justify-center bg-transparent">
-                        <span className="w-12 h-[2px] bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.9)] animate-pulse"></span>
+                      <div className="absolute inset-x-12 inset-y-12 border-2 border-stone-400/50 rounded-xl pointer-events-none z-10 flex items-center justify-center bg-transparent">
+                        <span className="w-10 h-[2px] bg-emerald-500 shadow-sm animate-pulse flex shrink-0"></span>
                       </div>
                       
-                      {/* Holographic glowing scan line sweep for high polish */}
+                      {/* Clean sweep scan line */}
                       <div 
-                        className="absolute left-0 right-0 h-[2px] bg-emerald-400 shadow-[0_0_12px_#34d399] z-20 pointer-events-none" 
-                        style={{ animation: 'scanLineSweep 2.2s infinite linear' }}
+                        className="absolute left-0 right-0 h-[1.5px] bg-emerald-400 shadow-sm z-20 pointer-events-none" 
+                        style={{ animation: 'scanLineSweep 2.5s infinite linear' }}
                       />
 
-                      {/* Scanner hint footer tag */}
                       <div className="absolute bottom-3 inset-x-0 text-center z-20">
-                        <span className="bg-stone-950/80 backdrop-blur-md text-[9px] px-2.5 py-1 rounded-md text-emerald-400 font-mono tracking-wider border border-emerald-930">
-                          LIVE CAMERA VIEWPORT ACTIVE
+                        <span className="bg-stone-905 bg-stone-950/80 backdrop-blur-md text-[9.5px] px-2.5 py-1 rounded-md text-emerald-400 font-mono tracking-wider border border-emerald-900">
+                          CAMERA VIEWPORT ACTIVE
                         </span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Manual Wedged Input controls (md:col-span-6) */}
+                  {/* Manual Input controls */}
                   <div className="md:col-span-6 space-y-4 flex flex-col justify-between">
                     <div>
-                      <label className="block text-[10.5px] font-black text-stone-900 uppercase tracking-widest font-mono">
-                        📸 Camera Scan Controller
+                      <label className="block text-[11px] font-bold text-stone-850 uppercase tracking-wider font-sans">
+                        Camera Scan Assist
                       </label>
                       <p className="text-[11px] text-stone-500 mt-1 leading-relaxed">
-                        Position your phone camera directly over any printed/displayed showroom product QR tag to register it in the current invoice bill instantly.
+                        Aim your camera lens directly over any product's printed QR label. The system will look up the model and instantly add it to the active bill below.
                       </p>
+
+                      {/* Camera Selector Dropdown */}
+                      {availableCameras.length > 1 && (
+                        <div className="mt-3 bg-white border border-stone-200 p-2 rounded-lg">
+                          <label className="block text-[9px] font-bold text-stone-500 uppercase tracking-widest mb-1">
+                            Camera Device Source:
+                          </label>
+                          <select 
+                            value={selectedCameraId}
+                            onChange={(e) => {
+                              setSelectedCameraId(e.target.value);
+                              setCameraError(null);
+                            }}
+                            className="w-full bg-stone-50 border border-stone-200 py-1 px-2 rounded-md text-xs text-stone-800 font-medium focus:outline-none focus:ring-1 focus:ring-stone-500 cursor-pointer"
+                          >
+                            {availableCameras.map(cam => (
+                              <option key={cam.id} value={cam.id}>
+                                {cam.label || `Alternative Device (${cam.id.slice(0, 5)})`}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
                     </div>
 
                     {/* Active call to connect real camera if function is provided */}
                     {onConnectPhone && (
-                      <div className="bg-emerald-50/70 border border-emerald-150 rounded-xl p-3 flex items-center justify-between shadow-xs">
+                      <div className="bg-emerald-50/50 border border-emerald-150 rounded-xl p-3 flex items-center justify-between shadow-xs">
                         <div className="flex items-center space-x-2.5">
-                          <div className="p-2 bg-emerald-100 rounded-xl text-emerald-700 shrink-0">
-                            <Smartphone className="w-4 h-4 animate-bounce" />
+                          <div className="p-2 bg-emerald-100 rounded-lg text-emerald-700 shrink-0">
+                            <Smartphone className="w-4 h-4" />
                           </div>
                           <div>
-                            <span className="text-[10px] font-black uppercase text-emerald-850 block">Got Another Phone?</span>
-                            <span className="text-[9.5px] text-stone-500 block leading-tight mt-0.5">Show connection QR setup instructions</span>
+                            <span className="text-[10.5px] font-semibold text-stone-800 block">External Android Scan Assist?</span>
+                            <span className="text-[10px] text-stone-500 block leading-tight">Connect phone to bypass web camera limits</span>
                           </div>
                         </div>
                         <button
                           type="button"
                           onClick={onConnectPhone}
-                          className="bg-emerald-600 hover:bg-emerald-700 hover:scale-[1.02] active:scale-[0.98] text-white px-2.5 py-1 rounded-lg text-[9.5px] font-black uppercase tracking-tight transition-all cursor-pointer shadow-xs whitespace-nowrap"
+                          className="bg-stone-900 hover:bg-stone-800 text-white px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all cursor-pointer whitespace-nowrap"
                         >
-                          Show Connect QR
+                          Connect Mobile
                         </button>
                       </div>
                     )}
 
-                    {/* Quick demo hotkeys representing fast clicking */}
-                    <div>
-                      <span className="text-[8.5px] font-bold uppercase text-stone-400 block mb-1">Click to simulate scanning under laser:</span>
-                      <div className="flex flex-wrap gap-1.5">
+                    {/* Quick demo hotkeys */}
+                    <div className="bg-white border border-stone-200 p-2.5 rounded-xl">
+                      <span className="text-[10px] font-bold uppercase text-stone-500 block mb-1.5">Quick-Scan Simulator:</span>
+                      <div className="flex flex-wrap gap-1.5 font-sans">
                         {products.slice(0, 4).map(p => (
                           <button
                             key={p.id}
                             type="button"
                             onClick={() => handleScannerScan(p.sku)}
-                            className="bg-white hover:bg-stone-100 text-stone-750 border border-stone-200 hover:border-amber-500/50 py-1 px-1.5 rounded-lg font-mono text-[9px] font-bold transition-all flex items-center space-x-1 shadow-sm cursor-pointer"
-                            title={`Aim and scan SKU ${p.sku}`}
+                            className="bg-stone-50 hover:bg-stone-100 text-stone-800 border border-stone-200 hover:border-stone-400 py-1 px-2 rounded font-mono text-[10px] transition-all flex items-center space-x-1 cursor-pointer"
+                            title={`Simulate Scan for SKU ${p.sku}`}
                           >
-                            <span className="w-1 h-3 flex items-center justify-center font-sans text-[7px] font-black bg-stone-900 border border-amber-500 rounded text-amber-500 mr-0.5">SCAN</span>
+                            <span className="font-sans text-[8px] font-bold bg-amber-500 text-white px-1 py-0.2 rounded-sm mr-1">SCAN</span>
                             <span>{p.sku}</span>
                           </button>
                         ))}
@@ -783,7 +1105,7 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
                       <div className="relative flex-1">
                         <input
                           type="text"
-                          placeholder="Type/paste any created SKU..."
+                          placeholder="Type or paste SKU code directly..."
                           value={manualScanInput}
                           onChange={(e) => setManualScanInput(e.target.value)}
                           onKeyDown={(e) => {
@@ -792,16 +1114,16 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
                               handleScannerScan(manualScanInput);
                             }
                           }}
-                          className="w-full pl-2.5 pr-2 py-1.5 text-xs border border-stone-200 bg-white font-mono uppercase font-bold focus:ring-1 focus:ring-amber-500 focus:border-amber-500 rounded-lg focus:outline-none"
+                          className="w-full pl-2.5 pr-2 py-1.5 text-xs border border-stone-250 bg-white font-mono uppercase font-bold focus:ring-1 focus:ring-stone-500 rounded-lg focus:outline-none"
                         />
                       </div>
                       <button
                         type="button"
                         onClick={() => handleScannerScan(manualScanInput)}
-                        className="px-3 py-1.5 bg-stone-900 hover:bg-stone-850 text-white text-xs font-bold rounded-lg transition-all cursor-pointer shadow-sm flex items-center space-x-1.5"
+                        className="px-3.5 py-1.5 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-lg transition-all cursor-pointer shadow-sm"
                         title="Add to invoice"
                       >
-                        <span>Scan Code</span>
+                        Add to Bill
                       </button>
                     </div>
 
@@ -960,81 +1282,385 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
                   {cart.map(item => (
                     <div 
                       key={item.product.id} 
-                      className="flex items-center justify-between p-2.5 rounded-xl border border-stone-100 bg-stone-50/75 hover:bg-stone-50 transition-colors"
+                      className="border border-stone-200 rounded-xl overflow-hidden bg-white shadow-3xs"
                     >
-                      <div className="min-w-0 flex-1 mr-3">
-                        <div className="flex items-center space-x-1.5">
-                          <h5 className="text-xs font-bold text-stone-900 truncate">{item.product.name}</h5>
-                          <span className="text-[8.5px] bg-stone-200 px-1 py-0.2 rounded text-stone-600 uppercase flex-shrink-0 font-mono">
-                            {item.product.unit}
-                          </span>
-                        </div>
-                        <p className="text-[10px] text-stone-500 font-mono mt-0.5">
-                          ₹{item.product.price.toLocaleString('en-IN')} / {item.product.unit} • <span className="font-semibold text-stone-700">{item.product.sku}</span>
-                        </p>
-                        {(() => {
-                          const p = item.product;
-                          let helperText = '';
+                      <div className="flex flex-col md:flex-row md:items-center justify-between p-3.5 bg-stone-50/70 hover:bg-stone-50 gap-4 transition-colors">
+                        <div className="min-w-0 flex-1 mr-3">
+                          <div className="flex items-center space-x-1.5">
+                            <h5 className="text-xs font-bold text-stone-900 truncate">{item.product.name}</h5>
+                            <span className="text-[8.5px] bg-stone-200 px-1 py-0.2 rounded text-stone-600 uppercase flex-shrink-0 font-mono">
+                              {item.product.unit}
+                            </span>
+                          </div>
                           
-                          if (p.category === 'Tiles') {
-                            const cov = p.boxCoverage || 12.5;
-                            const boxes = (item.quantity / cov).toFixed(1);
-                            const totalPcs = Math.ceil(item.quantity / cov) * (p.itemsPerBox || 4);
-                            helperText = `📦 Packing: ${boxes} boxes (${totalPcs} pcs)`;
-                            if (p.weightPerBox) {
-                              const weight = (Math.ceil(item.quantity / cov) * p.weightPerBox).toFixed(0);
-                              helperText += ` • ~${weight}kg cargo`;
-                            }
-                          } else if (p.itemsPerBox) {
-                            const boxes = Math.ceil(item.quantity / p.itemsPerBox);
-                            helperText = `📦 Packing: ${boxes} cartons (${p.itemsPerBox} pcs/ctn)`;
-                            if (p.weightPerBox) {
-                              const weight = (boxes * p.weightPerBox).toFixed(0);
-                              helperText += ` • ~${weight}kg cargo`;
-                            }
-                          } else {
-                            helperText = `📦 Invoiced Unit: ${p.sellUnitBasis || 'pcs'} basis`;
-                          }
+                          <p className="text-[10px] text-stone-500 font-mono mt-0.5">
+                            ₹{item.product.price.toLocaleString('en-IN')} / {item.product.unit} • <span className="font-semibold text-stone-700">{item.product.sku}</span>
+                          </p>
 
-                          return (
-                            <p className="text-[9.5px] text-[#9A7B56] font-semibold mt-1 bg-stone-100 py-0.5 px-1.5 rounded inline-block font-mono">
-                              {helperText}
-                            </p>
-                          );
-                        })()}
-                      </div>
+                          {(() => {
+                            const p = item.product;
+                            let helperText = '';
+                            
+                            if (p.category === 'Tiles' || p.category === 'Marble') {
+                              const cov = p.boxCoverage || 12.5;
+                              const boxes = (item.quantity / cov).toFixed(1);
+                              const totalPcs = Math.ceil(item.quantity / cov) * (p.itemsPerBox || 4);
+                              helperText = `📦 Packing: ${boxes} boxes (${totalPcs} pcs)`;
+                              if (p.weightPerBox) {
+                                const weight = (Math.ceil(item.quantity / cov) * p.weightPerBox).toFixed(0);
+                                helperText += ` • ~${weight}kg cargo`;
+                              }
+                            } else if (p.itemsPerBox) {
+                              const boxes = Math.ceil(item.quantity / p.itemsPerBox);
+                              helperText = `📦 Packing: ${boxes} cartons (${p.itemsPerBox} pcs/ctn)`;
+                              if (p.weightPerBox) {
+                                const weight = (boxes * p.weightPerBox).toFixed(0);
+                                helperText += ` • ~${weight}kg cargo`;
+                              }
+                            } else {
+                              helperText = `📦 Invoiced Unit: ${p.sellUnitBasis || 'pcs'} basis`;
+                            }
 
-                      {/* Controls Counter and Delete */}
-                      <div className="flex items-center space-x-2">
-                        <div className="flex items-center space-x-1 bg-white border border-stone-200 rounded-lg p-0.5">
+                            return (
+                              <p className="text-[9.5px] text-[#9A7B56] font-semibold mt-1 bg-stone-100 py-0.5 px-1.5 rounded inline-block font-mono">
+                                {helperText}
+                              </p>
+                            );
+                          })()}
+
+                          {/* Render Active Calculations remarks */}
+                          {item.remark && (
+                            <div className="mt-1 flex items-center space-x-1.5 text-[9.5px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-150 px-1.5 py-0.5 rounded-md font-mono self-start w-max">
+                              <span>📐 {item.remark}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCart(prev => prev.map(c => c.product.id === item.product.id ? { ...c, remark: undefined } : c));
+                                }}
+                                className="text-emerald-500 hover:text-emerald-800 font-bold ml-1 text-[8.5px]"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Quick calculator trigger button */}
                           <button
                             type="button"
-                            onClick={() => handleUpdateCartQty(item.product.id, -1)}
-                            className="p-1 hover:bg-stone-100 rounded text-stone-500"
+                            onClick={() => {
+                              if (openedCalcId === item.product.id) {
+                                setOpenedCalcId(null);
+                              } else {
+                                setOpenedCalcId(item.product.id);
+                                if (item.product.category === 'Tiles') {
+                                  setCalcMode('wastage');
+                                  setTargetArea('150');
+                                  setWastagePercent('10');
+                                } else {
+                                  setCalcMode('slab');
+                                  setSlabLength('6.5');
+                                  setSlabWidth('4.0');
+                                  setSlabCount('10');
+                                }
+                              }
+                            }}
+                            className="mt-1.5 block text-[8.5px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 hover:bg-amber-100 px-2 py-0.5 rounded border border-amber-200 cursor-pointer w-max transition-all"
                           >
-                            <Minus className="w-3 h-3" />
+                            {openedCalcId === item.product.id ? 'Hide Calc ✕' : '📐 Inline Calc Slabs / Wastage'}
                           </button>
-                          <span className="w-6 text-center font-mono text-xs font-bold text-stone-800">
-                            {item.quantity}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateCartQty(item.product.id, 1)}
-                            className="p-1 hover:bg-stone-100 rounded text-stone-500"
-                          >
-                            <Plus className="w-3 h-3" />
-                          </button>
+
+                          {/* Row direct pricing & line discount edits */}
+                          <div className="mt-3.5 pt-2.5 border-t border-stone-200/60 flex flex-wrap items-center gap-x-3 gap-y-2">
+                            <div className="flex items-center space-x-1.5">
+                              <span className="text-[10px] text-stone-500 font-bold">Price per Unit:</span>
+                              <div className="relative flex items-center">
+                                <span className="absolute left-1.5 text-[10px] text-stone-400 font-mono">₹</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={item.customPrice !== undefined ? item.customPrice : item.product.price}
+                                  onChange={(e) => {
+                                    const val = parseFloat(e.target.value);
+                                    handleUpdateCustomPrice(item.product.id, isNaN(val) ? 0 : val);
+                                  }}
+                                  className="w-18 pl-4 pr-1 py-0.5 text-left font-mono text-[10.5px] font-bold text-stone-850 bg-stone-50 border border-stone-250 rounded focus:outline-none focus:ring-1 focus:ring-amber-500"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="flex items-center space-x-1.5">
+                              <span className="text-[10px] text-stone-500 font-bold">Line Disc:</span>
+                              <div className="relative flex items-center">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  placeholder="0"
+                                  value={item.customDiscount !== undefined ? item.customDiscount : ''}
+                                  onChange={(e) => {
+                                    let val = parseFloat(e.target.value);
+                                    if (isNaN(val)) val = 0;
+                                    if (val < 0) val = 0;
+                                    if (val > 100) val = 100;
+                                    handleUpdateCustomDiscount(item.product.id, val);
+                                  }}
+                                  className="w-10 pr-4 pl-1 py-0.5 text-center font-mono text-[10.5px] font-bold text-stone-850 bg-stone-50 border border-stone-250 rounded focus:outline-none focus:ring-1 focus:ring-amber-500"
+                                />
+                                <span className="absolute right-1 text-[10px] text-stone-400 font-mono">%</span>
+                              </div>
+                            </div>
+
+                            {(() => {
+                              const pr = item.customPrice !== undefined ? item.customPrice : item.product.price;
+                              const di = item.customDiscount !== undefined ? item.customDiscount : 0;
+                              const lineTotal = (pr * item.quantity) * (1 - di / 100);
+                              return (
+                                <div className="ml-auto text-right text-[11px] font-extrabold text-stone-900 font-mono bg-emerald-50/50 border border-emerald-100 px-2 py-0.5 rounded">
+                                  ₹{lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 1 })}
+                                </div>
+                              );
+                            })()}
+                          </div>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveItem(item.product.id)}
-                          className="p-1.5 text-stone-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                          title="Purge item from draft"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {/* Controls Counter and Delete */}
+                        <div className="flex items-center lg:flex-col gap-2.5 shrink-0 self-end md:self-center">
+                          <div className="flex items-center space-x-1 bg-white border border-stone-200 rounded-lg p-0.5">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateCartQty(item.product.id, -1)}
+                              className="p-1 hover:bg-stone-100 rounded text-stone-500"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={item.quantity}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                handleSetCartQty(item.product.id, isNaN(val) ? 0 : val);
+                              }}
+                              className="w-12 text-center font-mono text-xs font-bold text-stone-800 bg-transparent border-none p-0 focus:outline-none focus:ring-0"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateCartQty(item.product.id, 1)}
+                              className="p-1 hover:bg-stone-100 rounded text-stone-500"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveItem(item.product.id)}
+                            className="p-2 text-stone-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-red-100"
+                            title="Purge item from draft"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
+
+                      {/* Expandable Inline measurements section */}
+                      {openedCalcId === item.product.id && (
+                        <div className="bg-stone-100/95 border-t border-stone-200/90 p-3 space-y-3 antialiased">
+                          <div className="flex items-center justify-between border-b border-stone-200 pb-1.5 text-[9px] font-bold uppercase tracking-wider font-mono">
+                            <span className="text-stone-700">Measurements Helper</span>
+                            <div className="flex bg-stone-200 p-0.5 rounded text-[8px]">
+                              <button
+                                type="button"
+                                onClick={() => setCalcMode('slab')}
+                                className={`px-2 py-0.5 rounded-sm transition-all ${calcMode === 'slab' ? 'bg-white text-stone-900 font-extrabold shadow-3xs' : 'text-stone-550 hover:text-stone-850'}`}
+                              >
+                                Slab (L×W×N)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setCalcMode('wastage')}
+                                className={`px-2 py-0.5 rounded-sm transition-all ${calcMode === 'wastage' ? 'bg-white text-stone-900 font-extrabold shadow-3xs' : 'text-stone-550 hover:text-stone-850'}`}
+                              >
+                                Tile (+Wastage)
+                              </button>
+                            </div>
+                          </div>
+
+                          {calcMode === 'slab' ? (
+                            <div className="space-y-2.5">
+                              <p className="text-[9px] text-stone-500 leading-tight">
+                                Recommended for marble slabs or granite pieces. Enter dimensions in standard feet and run total area.
+                              </p>
+                              
+                              <div className="grid grid-cols-3 gap-1.5 text-[9.5px] font-mono">
+                                <div>
+                                  <label className="block text-stone-500 uppercase text-[7.5px] mb-0.5 font-bold">Length (ft):</label>
+                                  <input 
+                                    type="number" 
+                                    step="0.1"
+                                    value={slabLength}
+                                    onChange={(e) => setSlabLength(e.target.value)}
+                                    className="w-full bg-white border border-stone-250 rounded px-1 py-0.5 text-center font-bold text-stone-800 focus:outline-none"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-stone-500 uppercase text-[7.5px] mb-0.5 font-bold">Width (ft):</label>
+                                  <input 
+                                    type="number" 
+                                    step="0.1"
+                                    value={slabWidth}
+                                    onChange={(e) => setSlabWidth(e.target.value)}
+                                    className="w-full bg-white border border-stone-250 rounded px-1 py-0.5 text-center font-bold text-stone-800 focus:outline-none"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-stone-500 uppercase text-[7.5px] mb-0.5 font-bold">Slabs (pcs):</label>
+                                  <input 
+                                    type="number" 
+                                    step="1"
+                                    value={slabCount}
+                                    onChange={(e) => setSlabCount(e.target.value)}
+                                    className="w-full bg-white border border-stone-250 rounded px-1 py-0.5 text-center font-bold text-stone-800 focus:outline-none"
+                                  />
+                                </div>
+                              </div>
+
+                              {(() => {
+                                const l = parseFloat(slabLength) || 0;
+                                const w = parseFloat(slabWidth) || 0;
+                                const c = Math.ceil(parseFloat(slabCount)) || 0;
+                                const totalArea = Math.round(l * w * c * 10) / 10;
+                                return (
+                                  <div className="flex items-center justify-between bg-white px-2 py-1.5 rounded border border-stone-200">
+                                    <div className="font-mono text-[9px] text-stone-500">
+                                      <span className="font-bold text-stone-800">{l}ft</span> × <span className="font-bold text-stone-800">{w}ft</span> × <span className="font-bold text-stone-800">{c} slabs</span>
+                                    </div>
+                                    <div className="text-right font-mono text-[10px]">
+                                      <span className="text-stone-400">Yield: </span>
+                                      <span className="font-bold text-amber-700">{totalArea} sqft</span>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const l = parseFloat(slabLength) || 0;
+                                  const w = parseFloat(slabWidth) || 0;
+                                  const c = Math.ceil(parseFloat(slabCount)) || 0;
+                                  const totalArea = Math.round(l * w * c);
+                                  
+                                  if (totalArea <= 0) return;
+                                  
+                                  setCart(prev => prev.map(cItem => 
+                                    cItem.product.id === item.product.id 
+                                      ? { 
+                                          ...cItem, 
+                                          quantity: totalArea, 
+                                          remark: `${c} Slabs (${l}' × ${w}')` 
+                                        }
+                                      : cItem
+                                  ));
+                                  setOpenedCalcId(null);
+                                }}
+                                className="w-full bg-stone-900 hover:bg-stone-800 text-white font-mono text-[9px] font-extrabold py-1 rounded uppercase tracking-wider cursor-pointer text-center"
+                              >
+                                Apply math values ✓
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="space-y-2.5">
+                              <p className="text-[9px] text-stone-500 leading-tight">
+                                Recommended for architectural flooring tiles. Enter target lay room size and select standard cutting wastage offsets.
+                              </p>
+
+                              <div className="grid grid-cols-2 gap-1.5 text-[9.5px] font-mono">
+                                <div>
+                                  <label className="block text-stone-500 uppercase text-[7.5px] mb-0.5 font-bold">Target (sqft):</label>
+                                  <input 
+                                    type="number" 
+                                    value={targetArea}
+                                    onChange={(e) => setTargetArea(e.target.value)}
+                                    className="w-full bg-white border border-stone-250 rounded px-1 py-0.5 text-center font-bold text-stone-805 text-stone-800 focus:outline-none"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-stone-500 uppercase text-[7.5px] mb-0.5 font-bold">Wastage Margin:</label>
+                                  <select 
+                                    value={wastagePercent}
+                                    onChange={(e) => setWastagePercent(e.target.value)}
+                                    className="w-full bg-white border border-stone-250 rounded p-0.5 py-0.5 text-center font-bold text-stone-800 text-[9px] focus:outline-none cursor-pointer"
+                                  >
+                                    <option value="0">0% perfect</option>
+                                    <option value="5">5% simple layout</option>
+                                    <option value="10">10% standard</option>
+                                    <option value="15">15% high cut wastage</option>
+                                  </select>
+                                </div>
+                              </div>
+
+                              {(() => {
+                                const target = parseFloat(targetArea) || 0;
+                                const waste = parseFloat(wastagePercent) || 0;
+                                const boxCov = item.product.boxCoverage || 12.5;
+                                
+                                const totalNeeded = target * (1 + waste / 100);
+                                const boxes = Math.ceil(totalNeeded / boxCov);
+                                const finalBillableArea = boxes * boxCov;
+
+                                return (
+                                  <div className="space-y-1 bg-white p-2 rounded border border-stone-200 font-mono text-[9px]">
+                                    <div className="flex justify-between text-stone-500">
+                                      <span>Area + Waste:</span>
+                                      <span className="font-semibold text-stone-800">{totalNeeded.toFixed(1)} sqft</span>
+                                    </div>
+                                    <div className="flex justify-between text-stone-500 border-t border-stone-50 pt-1">
+                                      <span>Cartons / Boxes Required:</span>
+                                      <span className="font-bold text-stone-900">{boxes} Boxes</span>
+                                    </div>
+                                    <div className="flex justify-between text-stone-500 border-t border-stone-50 pt-1">
+                                      <span>Invoiced coverage:</span>
+                                      <span className="font-bold text-amber-700">{finalBillableArea.toFixed(1)} sqft</span>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const target = parseFloat(targetArea) || 0;
+                                  const waste = parseFloat(wastagePercent) || 0;
+                                  const boxCov = item.product.boxCoverage || 12.5;
+                                  
+                                  const totalNeeded = target * (1 + waste / 100);
+                                  const boxes = Math.ceil(totalNeeded / boxCov);
+                                  const finalBillableArea = boxes * boxCov;
+
+                                  if (boxes <= 0) return;
+
+                                  setCart(prev => prev.map(cItem => 
+                                    cItem.product.id === item.product.id 
+                                      ? { 
+                                          ...cItem, 
+                                          quantity: finalBillableArea,
+                                          remark: `${boxes} Boxes (for ${target} sqft +${waste}% waste)` 
+                                        }
+                                      : cItem
+                                  ));
+                                  setOpenedCalcId(null);
+                                }}
+                                className="w-full bg-stone-900 hover:bg-stone-800 text-white font-mono text-[9px] font-extrabold py-1 rounded uppercase tracking-wider cursor-pointer text-center"
+                              >
+                                Apply box estimators ✓
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1042,8 +1668,135 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
 
               {/* Customer Particulars Intake */}
               <div className="pt-3 border-t border-stone-100 space-y-2.5">
-                <div className="text-[10px] font-bold text-stone-400 uppercase tracking-widest font-mono">
-                  Client & Project Particulars
+                <div className="text-[10px] font-bold text-stone-400 uppercase tracking-widest font-mono flex items-center justify-between">
+                  <span>Client & Project Particulars</span>
+                  <span className="text-[8.5px] bg-amber-100 text-amber-800 px-1 py-0.2 rounded">Ledger Connected ✓</span>
+                </div>
+
+                {/* Search existing ledger accounts picker */}
+                <div className="mt-1 relative bg-stone-100/60 p-2.5 rounded-xl border border-stone-200" id="pos-ledger-search">
+                  <span className="block text-[8.5px] font-bold text-stone-500 uppercase tracking-widest font-mono mb-1">
+                    🔍 Existing Account Lookup (Ledger Directory)
+                  </span>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text"
+                      placeholder="Search builder, contractor, client name/phone..."
+                      value={ledgerSearch}
+                      onChange={(e) => {
+                        setLedgerSearch(e.target.value);
+                        setShowLedgerDropdown(true);
+                      }}
+                      onFocus={() => setShowLedgerDropdown(true)}
+                      className="flex-1 px-2.5 py-1.5 text-[10.5px] border border-stone-250 bg-white rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500 font-medium"
+                    />
+                    {ledgerSearch && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLedgerSearch('');
+                          setShowLedgerDropdown(false);
+                        }}
+                        className="px-2 py-1 text-[9.5px] font-bold uppercase bg-stone-250 hover:bg-stone-300 rounded text-stone-700 cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Dropdown list */}
+                  {showLedgerDropdown && (
+                    <div className="absolute left-1 right-1 mt-1 bg-white border border-stone-300 rounded-xl max-h-48 overflow-y-auto shadow-lg z-20 divide-y divide-stone-100">
+                      {(() => {
+                        const matching = customersSummaryList.filter(c => 
+                          c.name.toLowerCase().includes(ledgerSearch.toLowerCase()) || 
+                          c.phone.includes(ledgerSearch)
+                        );
+                        if (matching.length === 0) {
+                          return (
+                            <div className="p-3 text-center text-stone-400 font-mono text-[9px] italic">
+                              No accounts match. Type fields below to check out as generic walk-in.
+                            </div>
+                          );
+                        }
+                        return matching.map(c => {
+                          const hasAdvance = c.outstanding < 0;
+                          return (
+                            <button
+                              key={c.name + c.phone}
+                              type="button"
+                              onClick={() => {
+                                setCustomerName(c.name);
+                                setCustomerPhone(c.phone === 'N/A' ? '' : c.phone);
+                                setCustomerAddress(c.address.includes('Payment Account Only') ? '' : c.address);
+                                setLedgerSearch(c.name);
+                                setShowLedgerDropdown(false);
+                              }}
+                              className="w-full text-left p-2 hover:bg-stone-50 flex items-center justify-between text-[10.5px] font-medium transition-colors cursor-pointer"
+                            >
+                              <div className="pl-1">
+                                <span className="font-bold text-stone-900 block">{c.name}</span>
+                                <span className="text-[8.5px] text-stone-500 font-mono">{c.phone || 'No phone'} • {c.address.slice(0, 32)}...</span>
+                              </div>
+                              <div className="text-right pr-1">
+                                {hasAdvance ? (
+                                  <span className="text-[8.5px] bg-emerald-50 text-emerald-800 border border-emerald-100 font-bold px-1.5 py-0.5 rounded font-mono block">
+                                    Credit: ₹{Math.abs(c.outstanding).toLocaleString('en-IN')}
+                                  </span>
+                                ) : c.outstanding > 0 ? (
+                                  <span className="text-[8.5px] bg-red-50 text-red-800 border border-red-100 font-bold px-1.5 py-0.5 rounded font-mono block">
+                                    Due: ₹{c.outstanding.toLocaleString('en-IN')}
+                                  </span>
+                                ) : (
+                                  <span className="text-[8.5px] bg-stone-100 text-stone-605 font-bold px-1.5 py-0.5 rounded font-mono block">
+                                    Cleared
+                                  </span>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        });
+                      })()}
+                    </div>
+                  )}
+
+                  {/* Active selected customer Ledger Balance display */}
+                  {(() => {
+                    const match = customersSummaryList.find(c => 
+                      c.name.trim().toLowerCase() === customerName.trim().toLowerCase() && 
+                      (customerPhone ? c.phone.trim() === customerPhone.trim() : true)
+                    );
+                    if (!match) return null;
+                    const hasAdvance = match.outstanding < 0;
+                    return (
+                      <div className={`mt-2 p-2 rounded-lg border flex items-center justify-between text-[9.5px] font-mono font-bold ${
+                        hasAdvance 
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-250' 
+                          : match.outstanding > 0 
+                            ? 'bg-amber-50 text-amber-900 border-amber-250 animate-pulse' 
+                            : 'bg-stone-50 text-stone-700 border-stone-200'
+                      }`}>
+                        <div className="flex items-center space-x-1">
+                          <span>👤 ACCOUNT STATUS DETECTED:</span>
+                        </div>
+                        <div>
+                          {hasAdvance ? (
+                            <span className="bg-emerald-605 text-white px-1.5 py-0.5 rounded text-[10px] font-black">
+                              ADVANCE CREDIT AVAILABLE: ₹{Math.abs(match.outstanding).toLocaleString('en-IN')}
+                            </span>
+                          ) : match.outstanding > 0 ? (
+                            <span className="bg-red-650 text-white px-1.5 py-0.5 rounded text-[10px] font-black">
+                              OUTSTANDING BALANCE DUE: ₹{match.outstanding.toLocaleString('en-IN')}
+                            </span>
+                          ) : (
+                            <span className="bg-stone-200 text-stone-850 px-1.5 py-0.5 rounded uppercase text-[8px] font-black">
+                              Cleared Accounts Good
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
                 
                 <div className="grid grid-cols-2 gap-2">
@@ -1114,17 +1867,95 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
                 </div>
               </div>
 
+              {/* Extra Labor / Loading / Custom Transport Charges Panel */}
+              <div className="bg-stone-50 border border-stone-200 p-3 rounded-xl space-y-3 font-sans">
+                <div className="flex items-center justify-between pointer-events-none">
+                  <span className="text-[10px] font-bold text-stone-900 uppercase tracking-wider">
+                    🚚 Additional Billing Charges
+                  </span>
+                  <span className="text-[9.5px] font-mono text-amber-700 font-bold">
+                    +₹{calculatedTotals.extraCharges.toLocaleString('en-IN')} Add-on
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-[8.5px] font-bold text-stone-550 font-mono mb-1 truncate">
+                      Loading (₹)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={loadingCharges || ''}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setLoadingCharges(isNaN(val) ? 0 : val);
+                      }}
+                      className="w-full h-8 px-2 text-center text-xs font-mono font-semibold bg-white border border-stone-250 rounded focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[8.5px] font-bold text-stone-550 font-mono mb-1 truncate">
+                      Labour (₹)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={labourCharges || ''}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setLabourCharges(isNaN(val) ? 0 : val);
+                      }}
+                      className="w-full h-8 px-2 text-center text-xs font-mono font-semibold bg-white border border-stone-250 rounded focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[8.5px] font-bold text-stone-550 font-mono mb-1 truncate">
+                      Other Charges (₹)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={otherCharges || ''}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setOtherCharges(isNaN(val) ? 0 : val);
+                      }}
+                      className="w-full h-8 px-2 text-center text-xs font-mono font-semibold bg-white border border-stone-250 rounded focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </div>
+                </div>
+
+                {(loadingCharges > 0 || labourCharges > 0 || otherCharges > 0) && (
+                  <div>
+                    <input
+                      type="text"
+                      placeholder="Describe Other Charges (e.g. wooden box palleting)"
+                      value={otherChargesRemarks}
+                      onChange={(e) => setOtherChargesRemarks(e.target.value)}
+                      className="w-full px-2 py-1 bg-white text-[9.5px] border border-stone-200 rounded outline-none focus:ring-1 focus:ring-amber-500 font-sans"
+                    />
+                  </div>
+                )}
+              </div>
+
               {/* Payment Methods */}
               <div>
                 <span className="block text-[10px] font-bold text-stone-400 uppercase tracking-widest font-mono mb-2">
                   Settlement Method
                 </span>
-                <div className="grid grid-cols-4 gap-1.5">
+                <div className="grid grid-cols-5 gap-1">
                   {[
                     { id: 'Cash', icon: Coins },
                     { id: 'Card', icon: CreditCard },
                     { id: 'UPI', icon: Sparkles },
-                    { id: 'Bank Transfer', icon: Landmark }
+                    { id: 'Bank Transfer', icon: Landmark },
+                    { id: 'Credit', icon: Book }
                   ].map(method => {
                     const IconComp = method.icon;
                     return (
@@ -1132,17 +1963,133 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
                         key={method.id}
                         type="button"
                         onClick={() => setPaymentMethod(method.id as any)}
-                        className={`py-1.5 px-1 border rounded-lg flex flex-col items-center justify-center gap-1 transition-all ${
+                        className={`py-1.5 px-0.5 border rounded-lg flex flex-col items-center justify-center gap-1 transition-all ${
                           paymentMethod === method.id
                             ? 'border-stone-900 bg-stone-900 text-white shadow-sm font-semibold'
                             : 'border-stone-200 bg-white text-stone-605 hover:bg-stone-50'
                         }`}
                       >
                         <IconComp className="w-3.5 h-3.5" />
-                        <span className="text-[8.5px] text-center leading-none truncate w-full">{method.id}</span>
+                        <span className="text-[8px] text-center leading-none truncate w-full">{method.id}</span>
                       </button>
                     );
                   })}
+                </div>
+
+                {paymentMethod === 'Credit' && (
+                  <div className="text-[10px] text-red-850 bg-red-50/70 px-2.5 py-1.5 rounded-xl border border-red-150 text-center w-full font-semibold mt-2 font-mono">
+                    ⚠️ Credit Registry Book: Outstanding ₹{calculatedTotals.grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} will be added to {customerName.trim() || 'Valued Walk-In Client'}'s balance ledger.
+                  </div>
+                )}
+              </div>
+
+              {/* Localized Part Payment / Deposited Advance/ Udhaar Setting */}
+              <div className="bg-stone-50 border border-stone-200 p-3.5 rounded-xl space-y-3 font-sans">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-stone-900 uppercase tracking-tight flex items-center gap-1.5">
+                    <span>💵 {TRANSLATIONS[language].receivePartPayment}</span>
+                  </span>
+                  <span className="text-[8.5px] bg-[#f59e0b]/15 text-[#b45309] font-extrabold px-1.5 py-0.5 rounded font-mono uppercase">
+                    Split Cashflow
+                  </span>
+                </div>
+                
+                <p className="text-[9.5px] text-stone-500 leading-normal">
+                  {TRANSLATIONS[language].receivePartPaymentDesc}
+                </p>
+
+                {/* Quick Terms Selector Buttons */}
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setPaidAmountInput('')}
+                    className={`px-2 py-1.5 text-[9px] font-bold rounded-lg border transition-all truncate uppercase ${
+                      paidAmountInput === ''
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-3xs'
+                        : 'bg-white text-stone-605 border-stone-200 hover:bg-stone-50'
+                    }`}
+                  >
+                    🚀 {TRANSLATIONS[language].fullyPaidBtn}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (paidAmountInput === '' || parseFloat(paidAmountInput) === 0) {
+                        setPaidAmountInput(Math.round(calculatedTotals.grandTotal * 0.5).toString());
+                      }
+                    }}
+                    className={`px-2 py-1.5 text-[9px] font-bold rounded-lg border transition-all truncate uppercase ${
+                      paidAmountInput !== '' && parseFloat(paidAmountInput) > 0 && parseFloat(paidAmountInput) < calculatedTotals.grandTotal
+                        ? 'bg-amber-500 text-white border-amber-500 shadow-3xs'
+                        : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'
+                    }`}
+                  >
+                    🌗 {TRANSLATIONS[language].partPaidBtn}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPaidAmountInput('0')}
+                    className={`px-2 py-1.5 text-[9px] font-bold rounded-lg border transition-all truncate uppercase ${
+                      paidAmountInput === '0'
+                        ? 'bg-red-500 text-white border-red-500 shadow-3xs'
+                        : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'
+                    }`}
+                  >
+                    📖 {TRANSLATIONS[language].allDueBtn}
+                  </button>
+                </div>
+
+                {/* Amount input block */}
+                <div className="space-y-2 pt-1 border-t border-stone-150/60">
+                  <div className="flex items-center gap-1.5">
+                    <div className="relative flex-1">
+                      <span className="absolute left-2.5 top-1.5 text-xs text-stone-400 font-mono">₹</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max={calculatedTotals.grandTotal}
+                        step="any"
+                        placeholder={`Paid amount... (e.g. ₹${Math.ceil(calculatedTotals.grandTotal).toLocaleString('en-IN')})`}
+                        value={paidAmountInput}
+                        onChange={(e) => setPaidAmountInput(e.target.value)}
+                        className="w-full h-8 pl-6 pr-2 text-xs font-mono font-bold bg-white border border-stone-250 rounded focus:outline-none focus:ring-1 focus:ring-amber-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Quick percentage helper buttons if choosing split payment */}
+                  {paidAmountInput !== '' && parseFloat(paidAmountInput) < calculatedTotals.grandTotal && (
+                    <div className="flex items-center gap-1">
+                      <span className="text-[8px] text-stone-400 font-bold uppercase tracking-wider mr-1">Ratios:</span>
+                      {[0.25, 0.50, 0.75].map((pct) => {
+                        const calculatedAmt = Math.round(calculatedTotals.grandTotal * pct);
+                        return (
+                          <button
+                            key={pct}
+                            type="button"
+                            onClick={() => setPaidAmountInput(calculatedAmt.toString())}
+                            className="bg-white hover:bg-stone-100 border border-stone-200 px-1.5 py-0.5 rounded text-[8.5px] font-mono text-stone-600 transition-all font-semibold"
+                          >
+                            {pct * 100}% (₹{calculatedAmt.toLocaleString('en-IN')})
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Ledger ledger / balance due visual ledger impact status display */}
+                <div className="pt-2 flex flex-col gap-1 text-[10.5px] font-mono leading-none border-t border-stone-200">
+                  <div className="flex justify-between text-emerald-700">
+                    <span>{TRANSLATIONS[language].paidAmountLabel}:</span>
+                    <span className="font-black">₹{actualPaidAmount.toLocaleString('en-IN')}</span>
+                  </div>
+                  {calculatedDueAmount > 0 && (
+                    <div className="flex justify-between text-red-600">
+                      <span>{TRANSLATIONS[language].remainingDueLabel}:</span>
+                      <span className="font-extrabold animate-pulse">₹{calculatedDueAmount.toLocaleString('en-IN')}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1385,8 +2332,16 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
                             <td className="py-3 px-2 text-center font-mono">
                               {itemsCount} units
                             </td>
-                            <td className="py-3 px-2 text-right font-bold text-stone-900 font-mono">
-                              ₹{inv.grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            <td className="py-3 px-2 text-right font-mono text-stone-900">
+                              <span className="font-extrabold text-stone-950">₹{inv.grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 1 })}</span>
+                              <div className="text-[10px] mt-0.5 space-y-0.5">
+                                <div className="text-emerald-700">Recd: ₹{(inv.paidAmount ?? inv.grandTotal).toLocaleString('en-IN', { minimumFractionDigits: 1 })}</div>
+                                {(inv.dueAmount ?? 0) > 0 ? (
+                                  <div className="text-rose-600 font-bold bg-rose-50 border border-rose-100 rounded px-1 text-[9.5px] inline-block">Due: ₹{inv.dueAmount.toLocaleString('en-IN', { minimumFractionDigits: 1 })}</div>
+                                ) : (
+                                  <div className="text-stone-400 text-[9px]">Fully Paid</div>
+                                )}
+                              </div>
                             </td>
                             <td className="py-3 px-2 text-right">
                               <button
@@ -1436,116 +2391,376 @@ export default function BillingSystem({ products, onUpdateStock, onConnectPhone 
               </button>
             </div>
 
-            {/* Print Section wrapper matching realistic thermal/laser receipt */}
-            <div className="p-6 md:p-8 space-y-6" id="invoice-print-area">
+            {/* CSS styles to clean up system-level margins, date banners and ensure crisp document printing */}
+            <style>{`
+              @media print {
+                body {
+                  background-color: white !important;
+                  color: black !important;
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                }
+                body * {
+                  visibility: hidden;
+                }
+                #invoice-print-area, #invoice-print-area * {
+                  visibility: visible;
+                }
+                #invoice-print-area {
+                  position: absolute;
+                  left: 0;
+                  top: 0;
+                  width: 100%;
+                  margin: 0 !important;
+                  padding: 12px !important;
+                  box-shadow: none !important;
+                  border: none !important;
+                }
+                .no-print {
+                  display: none !important;
+                }
+              }
+            `}</style>
+
+            {/* Print Section wrapper matching generic Indian Tax Invoice standard */}
+            <div className="p-6 md:p-8 space-y-5 bg-white text-stone-900 selection:bg-stone-100" id="invoice-print-area">
               
-              {/* Receipt Header details */}
-              <div className="flex flex-col md:flex-row md:items-start justify-between border-b border-stone-200 pb-5 gap-4">
-                <div>
-                  <h1 className="text-2xl font-serif font-black tracking-tight text-stone-950 uppercase">
-                    RP Tiles
-                  </h1>
-                  <p className="text-[10px] text-stone-500 font-mono tracking-wider max-w-xs mt-1">
-                    Luxury Stone & Vitrified Tile Gallery. Experts in custom architectural layouts.
+              {/* Main Tax Invoice Header */}
+              <div className="text-center border-2 border-stone-800 p-2.5 rounded-t-xl bg-stone-50">
+                <h1 className="text-xl md:text-2xl font-sans font-black tracking-widest text-stone-950 uppercase border-b border-dashed border-stone-400 pb-1.5">
+                  TAX INVOICE
+                </h1>
+                <p className="text-[10px] font-mono tracking-widest text-stone-605 mt-1.5 uppercase font-bold">
+                  Original for Recipient • Intra-State Goods Supply Record
+                </p>
+              </div>
+
+              {/* Main Border Box holding company and bill particulars */}
+              <div className="border-x border-b border-stone-800 grid grid-cols-1 md:grid-cols-2 text-xs divide-y md:divide-y-0 md:divide-x divide-stone-800">
+                {/* Seller Particulars (RP Tiles) */}
+                <div className="p-4 space-y-2">
+                  <div className="font-serif font-black text-lg text-stone-950 tracking-tight leading-none uppercase">
+                    RP TILES & SANITARY
+                  </div>
+                  <p className="text-[10px] text-stone-500 font-mono tracking-wide">
+                    Luxury Stone, Vitrified Tiles & Sanitaryware Gallery
                   </p>
-                  <p className="text-[10.5px] text-stone-605 mt-2 flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-stone-400 flex-shrink-0" />
-                    <span>NH-57, Bus Stand, Near Pawan Motors, Araria - 854311</span>
+                  <p className="text-[11px] leading-relaxed text-stone-701 mt-1 flex items-start gap-1">
+                    <MapPin className="w-3.5 h-3.5 text-stone-600 shrink-0 mt-0.5" />
+                    <span>NH-57, Bus Stand, Near Pawan Motors, Araria, Bihar, PIN-854311</span>
+                  </p>
+                  <div className="pt-2 font-mono text-[11px] space-y-1 border-t border-stone-100 mt-2">
+                    <div className="flex justify-between">
+                      <span className="font-bold text-stone-600 text-[10px] uppercase">GSTIN / Tax ID:</span>
+                      <span className="font-black text-stone-950 tracking-wider">10AABCR7210Q1ZS</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="font-bold text-stone-600 text-[10px] uppercase">State Details:</span>
+                      <span className="font-semibold text-stone-800">Bihar (State Code: 10)</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="font-bold text-stone-600 text-[10px] uppercase">Contact Phone:</span>
+                      <span className="font-semibold text-stone-800">+91 94312 87311</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Invoice Particulars Table */}
+                <div className="p-4 divide-y divide-stone-100 text-[11px]">
+                  <div className="grid grid-cols-2 pb-2 gap-2">
+                    <div>
+                      <span className="block text-[9px] font-bold text-stone-400 uppercase font-mono mb-0.5">Invoice Number:</span>
+                      <span className="font-mono font-black text-xs text-stone-950 tracking-wider">{currentInvoice.invoiceNumber}</span>
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-bold text-stone-400 uppercase font-mono mb-0.5">Payment Method:</span>
+                      <span className="font-bold font-mono text-stone-950 text-xs px-2 py-0.5 bg-stone-100 rounded text-center block uppercase w-fit">{currentInvoice.paymentMethod}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 py-2 gap-2">
+                    <div>
+                      <span className="block text-[9px] font-bold text-stone-400 uppercase font-mono mb-0.5">Invoice Date:</span>
+                      <span className="font-semibold text-stone-900">{new Date(currentInvoice.timestamp).toLocaleDateString('en-IN', {day: '2-digit', month: 'short', year: 'numeric'})}</span>
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-bold text-stone-400 uppercase font-mono mb-0.5">Invoice Time:</span>
+                      <span className="font-semibold text-stone-900">{new Date(currentInvoice.timestamp).toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit', hour12: true})}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 pt-2 gap-2">
+                    <div>
+                      <span className="block text-[9px] font-bold text-stone-400 uppercase font-mono mb-0.5">Place of Supply:</span>
+                      <span className="font-bold text-stone-950">Bihar (State Code: 10)</span>
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-bold text-stone-400 uppercase font-mono mb-0.5">Transporter / Route:</span>
+                      <span className="text-stone-600 italic">Self Hand-Delivery / Local</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Customer Specific info - High contrast box */}
+              <div className="border border-stone-800 p-4 rounded-xl bg-stone-50/70 grid grid-cols-1 md:grid-cols-2 gap-4 text-[11px]">
+                <div className="space-y-1">
+                  <span className="block text-[10px] text-stone-400 uppercase tracking-widest font-mono font-black border-b border-stone-200 pb-1 mb-2">
+                    DETAILS OF CONSIGNEE / BILL TO:
+                  </span>
+                  <div className="font-bold text-stone-950 text-xs flex items-center gap-1">
+                    <User className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                    <span>{currentInvoice.customerName}</span>
+                  </div>
+                  <div className="text-stone-700 font-mono flex items-center gap-1.5 mt-1">
+                    <Phone className="w-3 h-3 text-stone-500 shrink-0" />
+                    <span>{currentInvoice.customerPhone}</span>
+                  </div>
+                  <p className="text-[10px] font-mono text-stone-500">
+                    GSTIN / Registration: <span className="font-bold text-stone-800">Unregistered Retail Customer</span>
                   </p>
                 </div>
                 
-                <div className="text-left md:text-right font-mono text-xs text-stone-600 space-y-1">
-                  <div className="font-bold text-stone-950 text-sm">INVOICE DOCUMENT</div>
-                  <div>ID: {currentInvoice.invoiceNumber}</div>
-                  <div>Issued: {new Date(currentInvoice.timestamp).toLocaleDateString()} at {new Date(currentInvoice.timestamp).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>
-                  <div>Method: <span className="font-bold text-stone-900 uppercase">{currentInvoice.paymentMethod}</span></div>
+                <div className="space-y-1">
+                  <span className="block text-[10px] text-stone-400 uppercase tracking-widest font-mono font-black border-b border-stone-200 pb-1 mb-2">
+                    SHIPPING / DELIVERY DESTINATION:
+                  </span>
+                  <div className="text-stone-800 leading-relaxed italic pr-2 font-medium">
+                    {currentInvoice.customerAddress}
+                  </div>
+                  <div className="text-[10.5px] mt-1 text-stone-600 font-mono">
+                    State: <span className="font-bold">Bihar</span> | State Code: <span className="font-bold">10</span>
+                  </div>
                 </div>
               </div>
 
-              {/* Customer Specific info cards */}
-              <div className="bg-stone-50 p-4 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-4 border border-stone-100 text-xs">
-                <div>
-                  <span className="block text-[10px] text-stone-400 uppercase tracking-wider font-mono font-bold mb-1">
-                    Billed To:
-                  </span>
-                  <div className="font-bold text-stone-900 text-sm">{currentInvoice.customerName}</div>
-                  <div className="text-stone-600 mt-0.5">{currentInvoice.customerPhone}</div>
-                </div>
-                <div>
-                  <span className="block text-[10px] text-stone-400 uppercase tracking-wider font-mono font-bold mb-1">
-                    Deliver Site Address:
-                  </span>
-                  <div className="text-stone-700 leading-relaxed italic">{currentInvoice.customerAddress}</div>
-                </div>
-              </div>
-
-              {/* Items Breakdown Table */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs text-left text-stone-600 border-collapse">
+              {/* Items Breakdown Grid Table - Standard Indian Format with S.No, Image and HSN */}
+              <div className="border border-stone-800 rounded-xl overflow-hidden shadow-xs">
+                <table className="w-full text-[11px] text-left text-stone-800 border-collapse">
                   <thead>
-                    <tr className="border-b border-stone-200 text-[10.5px] uppercase tracking-wider text-stone-400 font-mono">
-                      <th className="py-2.5">Item Description & SKU</th>
-                      <th className="py-2.5 text-center">Qty</th>
-                      <th className="py-2.5 text-right">Unit Price</th>
-                      <th className="py-2.5 text-right">Line Total</th>
+                    <tr className="bg-stone-900 text-white font-mono text-[10px] divide-x divide-stone-700 uppercase tracking-wider">
+                      <th className="py-2 px-1 text-center w-8">S.No.</th>
+                      <th className="py-2 px-1.5 text-center w-14">Image</th>
+                      <th className="py-2 px-3">Description of Goods</th>
+                      <th className="py-2 px-2 text-center w-20 font-mono">HSN Code</th>
+                      <th className="py-2 px-2 text-center w-16">Unit Rate</th>
+                      <th className="py-2 px-2 text-center w-20">Quantity</th>
+                      <th className="py-2 px-3 text-right w-24">Taxable Value</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    {currentInvoice.items.map((it, idx) => (
-                      <tr key={idx} className="border-b border-stone-100 text-stone-800">
-                        <td className="py-3">
-                          <p className="font-bold text-stone-950">{it.productName}</p>
-                          <p className="text-[10px] font-mono text-stone-505 mt-0.5">{it.sku} ({it.size})</p>
-                        </td>
-                        <td className="py-3 text-center font-mono">
-                          {it.quantity} <span className="text-[10px] text-stone-405">{it.unit}</span>
-                        </td>
-                        <td className="py-3 text-right font-mono">
-                          ₹{it.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3 text-right font-mono font-semibold text-stone-950">
-                          ₹{it.total.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                        </td>
-                      </tr>
-                    ))}
+                  <tbody className="divide-y divide-stone-850">
+                    {currentInvoice.items.map((it, idx) => {
+                      const imageFallback = products.find(p => p.sku === it.sku)?.image || 'https://images.unsplash.com/photo-1501183007986-d0d080b147f9?auto=format&fit=crop&w=120&q=80';
+                      const finalImage = it.productImage || imageFallback;
+                      const resolvedHsn = getHsnCode(it.sku);
+
+                      return (
+                        <tr key={idx} className="divide-x divide-stone-300 hover:bg-stone-50/50 text-stone-900">
+                          {/* Serial Number */}
+                          <td className="py-2 px-1 text-center font-mono font-bold text-stone-550">
+                            {idx + 1}
+                          </td>
+                          {/* Real Product Thumbnail Image */}
+                          <td className="py-2 px-1.5 text-center shrink-0">
+                            <img 
+                              src={finalImage} 
+                              alt={it.productName} 
+                              referrerPolicy="no-referrer" 
+                              className="w-10 h-10 object-cover rounded-lg border border-stone-300 shadow-2xs mx-auto block shrink-0 bg-stone-100"
+                            />
+                          </td>
+                          {/* Item Description details */}
+                          <td className="py-2 px-3">
+                            <span className="font-bold text-stone-950 block leading-tight">{it.productName}</span>
+                            <span className="text-[10px] font-mono text-stone-501 mt-0.5 block">
+                              SKU: {it.sku} &middot; Size: {it.size}
+                            </span>
+                            {it.remark && (
+                              <span className="text-[10px] text-emerald-850 italic font-mono mt-0.5 block font-semibold leading-none">
+                                ↳ Remark: {it.remark}
+                              </span>
+                            )}
+                          </td>
+                          {/* Indian HSN/SAC code */}
+                          <td className="py-2 px-2 text-center font-mono text-stone-700">
+                            {resolvedHsn}
+                          </td>
+                          {/* Rate Per Unit */}
+                          <td className="py-2 px-2 text-center font-mono">
+                            ₹{it.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </td>
+                          {/* Quantity */}
+                          <td className="py-2 px-2 text-center font-mono font-medium">
+                            {it.quantity} <span className="text-[9.5px] uppercase font-bold text-stone-500">{it.unit}</span>
+                          </td>
+                          {/* Gross Line Total Taxable Amount */}
+                          <td className="py-2 px-3 text-right font-mono font-semibold text-stone-950">
+                            ₹{it.total.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
 
-              {/* Pricing breakdown summary */}
-              <div className="flex justify-end pt-2">
-                <div className="w-full md:w-72 font-mono text-xs space-y-2 border-t border-stone-200 pt-3">
-                  <div className="flex justify-between text-stone-550">
-                    <span>Subtotal:</span>
-                    <span className="text-stone-900">₹{currentInvoice.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              {/* Tax calculations & Rupee Words block in India layout */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-4 pt-1.5">
+                
+                {/* Left Part: Indian Rupees in Words + Seller Banking Details */}
+                <div className="md:col-span-7 space-y-3">
+                  {/* Amount in words block */}
+                  <div className="bg-stone-50 border border-stone-250 p-3 rounded-xl text-stone-850 font-sans text-[11px] leading-relaxed">
+                    <span className="block text-[9px] font-black text-stone-400 uppercase tracking-wider font-mono">
+                      Invoice Total Amount in Words:
+                    </span>
+                    <p className="font-extrabold text-stone-900 mt-0.5">
+                      {numberToIndianWords(currentInvoice.grandTotal)}
+                    </p>
                   </div>
-                  {currentInvoice.discountRate > 0 && (
-                    <div className="flex justify-between text-emerald-600">
-                      <span>Discount ({currentInvoice.discountRate}%):</span>
-                      <span>-₹{currentInvoice.discountAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+
+                  {/* Seller Bank Details Block */}
+                  <div className="border border-stone-250 p-3 rounded-xl text-[10.5px] font-mono bg-white space-y-1.5">
+                    <span className="block text-[9px] font-black text-stone-400 uppercase tracking-wider">
+                      🏦 Firm's Bank Account Details (for RTGS/NEFT/UPI):
+                    </span>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-stone-800">
+                      <div><span className="text-stone-400 text-[9.5px] uppercase">Account Holder:</span> <span className="font-semibold">RP TILES & SANITARY</span></div>
+                      <div><span className="text-stone-400 text-[9.5px] uppercase">Account Type:</span> <span className="font-semibold">Current Account</span></div>
+                      <div><span className="text-stone-400 text-[9.5px] uppercase">Bank Name:</span> <span className="font-black text-stone-950">State Bank of India</span></div>
+                      <div><span className="text-stone-400 text-[9.5px] uppercase">IFSC Code:</span> <span className="font-black text-stone-950 tracking-wider">SBIN0000014</span></div>
+                      <div><span className="text-stone-400 text-[9.5px] uppercase">Account Number:</span> <span className="font-black text-stone-950 tracking-widest">39840294821</span></div>
+                      <div><span className="text-stone-400 text-[9.5px] uppercase">Bank Branch:</span> <span>Araria Main, Bihar</span></div>
                     </div>
-                  )}
-                  {currentInvoice.taxRate > 0 && (
-                    <div className="flex justify-between text-stone-550">
-                      <span>GST/Sales Tax ({currentInvoice.taxRate}%):</span>
-                      <span className="text-stone-901">+₹{currentInvoice.taxAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between pt-2 border-t border-stone-900 font-sans font-bold text-sm text-stone-950">
-                    <span>Settled Grand Total:</span>
-                    <span className="font-mono text-amber-600">₹{currentInvoice.grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                 </div>
+
+                {/* Right Part: Calculations Summary & Split CGST / SGST */}
+                <div className="md:col-span-5">
+                  <div className="border border-stone-800 p-4 rounded-xl font-mono text-[11.5px] space-y-2 bg-stone-50/50">
+                    <div className="flex justify-between text-stone-605">
+                      <span>Total Gross Subtotal:</span>
+                      <span className="font-bold">₹{currentInvoice.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+
+                    {currentInvoice.discountRate > 0 && (
+                      <div className="flex justify-between text-emerald-800 font-semibold font-sans">
+                        <span>Trade Discount ({currentInvoice.discountRate}%):</span>
+                        <span className="font-mono">-₹{currentInvoice.discountAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                      </div>
+                    )}
+
+                    <div className="flex justify-between border-t border-dashed border-stone-300 pt-2 font-bold text-stone-900">
+                      <span>Net Taxable Value:</span>
+                      <span>₹{(currentInvoice.subtotal - currentInvoice.discountAmount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+
+                    {currentInvoice.taxRate > 0 && (
+                      <div className="space-y-1.5 border-t border-dashed border-stone-300 pt-2 text-[10.5px]">
+                        <div className="flex justify-between text-stone-600">
+                          <span>CGST (Central Tax @ {currentInvoice.taxRate / 2}%):</span>
+                          <span className="font-semibold">+₹{(currentInvoice.taxAmount / 2).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                        </div>
+                        <div className="flex justify-between text-stone-600">
+                          <span>SGST (State Tax @ {currentInvoice.taxRate / 2}%):</span>
+                          <span className="font-semibold">+₹{(currentInvoice.taxAmount / 2).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Additional Fees and Cargo Transport breakdown */}
+                    {((currentInvoice.loadingCharges ?? 0) > 0 || (currentInvoice.labourCharges ?? 0) > 0 || (currentInvoice.otherCharges ?? 0) > 0) && (
+                      <div className="space-y-1 my-1.5 border-t border-dashed border-stone-300 pt-2 text-[10.5px] text-stone-600">
+                        <span className="block font-sans font-bold text-stone-500 uppercase text-[8.5px] mb-1">Shipping & Packaging Dues:</span>
+                        {(currentInvoice.loadingCharges ?? 0) > 0 && (
+                          <div className="flex justify-between">
+                            <span>Loading Charges:</span>
+                            <span className="font-semibold">₹{currentInvoice.loadingCharges.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                          </div>
+                        )}
+                        {(currentInvoice.labourCharges ?? 0) > 0 && (
+                          <div className="flex justify-between">
+                            <span>Labour / Setting Charges:</span>
+                            <span className="font-semibold">₹{currentInvoice.labourCharges.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                          </div>
+                        )}
+                        {(currentInvoice.otherCharges ?? 0) > 0 && (
+                          <div className="flex justify-between">
+                            <span>{currentInvoice.otherChargesRemarks || 'Other Extra Charges'}:</span>
+                            <span className="font-semibold">₹{currentInvoice.otherCharges.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex justify-between pt-2.5 border-t-2 border-stone-800 font-sans font-black text-xs text-stone-950 bg-stone-100 p-2 rounded-lg">
+                      <span className="uppercase tracking-wider">Grand Total Amount:</span>
+                      <span className="font-mono text-base text-amber-700">₹{currentInvoice.grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+
+                    {/* Part-payment deposit details split */}
+                    <div className="space-y-1.5 border-t border-solid border-stone-800/20 pt-2.5 text-[10.5px]">
+                      <div className="flex justify-between text-emerald-700 font-bold font-sans">
+                        <span>Deposited Advance:</span>
+                        <span className="font-mono">₹{(currentInvoice.paidAmount ?? currentInvoice.grandTotal).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                      </div>
+                      
+                      {(currentInvoice.dueAmount ?? 0) > 0 ? (
+                        <div className="flex justify-between text-red-700 bg-red-50 border border-red-200 p-1.5 rounded font-bold font-sans">
+                          <span>Outstanding Balance Due:</span>
+                          <span className="font-mono text-xs text-rose-600">₹{currentInvoice.dueAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                        </div>
+                      ) : (
+                        <div className="flex justify-between text-stone-500 font-semibold font-sans">
+                          <span>Outstanding Dues:</span>
+                          <span className="font-mono">₹0.00 (Fully Settled)</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
               </div>
 
-              {/* Legal Notes Footer info */}
-              <div className="border-t border-stone-200 pt-5 text-center text-[10px] text-stone-400 space-y-2 font-sans font-medium">
-                <p>
-                  Terms: Goods once supplied in good order are completely non-returnable and non-exchangeable. Please verify batch lot/shade code matches before installation. 
-                </p>
-                <p className="font-mono text-[9.5px] uppercase tracking-widest text-stone-500">
-                  RP Tiles • Thank you for your architectural patronage!
-                </p>
+              {/* Standard Declarations and Terms & Signatures layout */}
+              <div className="border-t-2 border-stone-800 pt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-[9.5px] text-stone-500 font-sans font-medium">
+                
+                {/* Company Declarations & Term Details */}
+                <div className="space-y-1.5 pr-4 border-r border-dotted border-stone-300">
+                  <p className="font-bold text-stone-900 uppercase tracking-wider text-[10px]">
+                    Terms & Conditions:
+                  </p>
+                  <ol className="list-decimal list-inside space-y-1 text-[9px] leading-relaxed">
+                    <li>Goods once fully supplied in good order are strictly non-returnable and non-exchangeable under any circumstances.</li>
+                    <li>Please inspect batch shades lot numbers and tile quality prior to physical installation on walls/floors.</li>
+                    <li>Interest at the rate of 18% per annum will be charged from the buyer on unpaid balance after the due date.</li>
+                    <li>All civil and commercial disputes are subject exclusively to Araria, Bihar District Court jurisdictions.</li>
+                  </ol>
+                  <p className="text-[10px] text-stone-800 italic mt-2">
+                    "We declare that this invoice shows the actual price of goods described & that all particulars are true and correct."
+                  </p>
+                </div>
+
+                {/* Signatures Columns spacing block */}
+                <div className="flex flex-col justify-between pt-2">
+                  <div className="flex justify-between text-center font-mono font-bold mt-2 text-stone-700">
+                    <div className="flex flex-col items-center">
+                      <div className="h-10"></div>
+                      <div className="border-t border-stone-400 w-32 pt-1 uppercase text-[9px] tracking-wider">Customer Signature</div>
+                    </div>
+                    
+                    <div className="flex flex-col items-center">
+                      <span className="text-[8.5px] italic font-semibold text-stone-400 lowercase leading-none block mb-1">for RP TILES & SANITARY</span>
+                      <div className="h-9"></div>
+                      <div className="border-t border-stone-400 w-44 pt-1 uppercase text-[9px] tracking-wider">Authorised Signatory / Representative</div>
+                    </div>
+                  </div>
+
+                  <p className="text-center font-mono text-[9px] uppercase tracking-widest text-stone-400 mt-6 pt-2 border-t border-stone-150">
+                    Thank you for your construction & architectural patronage!
+                  </p>
+                </div>
+
               </div>
 
             </div>

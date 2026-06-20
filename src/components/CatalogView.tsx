@@ -5,16 +5,19 @@
 
 import { useState } from 'react';
 import { Product, Category } from '../types';
+import { Language, TRANSLATIONS } from '../data/translations';
 import { Search, Filter, ShieldCheck, Grid, List, Check, Box, X, HelpCircle, ArrowUpRight } from 'lucide-react';
 
 interface CatalogViewProps {
   products: Product[];
+  language: Language;
   onOpenVisualizer?: (product: Product) => void;
   onUpdateProductStock?: (productId: string, newStock: number) => void;
 }
 
 export default function CatalogView({
   products,
+  language,
   onOpenVisualizer,
   onUpdateProductStock
 }: CatalogViewProps) {
@@ -33,7 +36,7 @@ export default function CatalogView({
   const uniqueFinishes = ['All', ...Array.from(new Set(products.map(p => p.finish)))];
 
   // Categories list
-  const categories: (Category | 'All')[] = ['All', 'Tiles', 'Bathware', 'Sanitaryware', 'Fittings'];
+  const categories: (Category | 'All')[] = ['All', 'Tiles', 'Bathware', 'Sanitaryware', 'Fittings', 'Marble'];
 
   // Filter products based on search, category and finish
   const filteredProducts = products.filter(product => {
