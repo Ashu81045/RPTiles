@@ -3,12 +3,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from 'fireb
 import { getAuth } from 'firebase/auth';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyA6Z44IHkvLfRChU-mGz0IBcZqqxWr0xB0",
-  authDomain: "mini-nas-gallery.firebaseapp.com",
-  projectId: "mini-nas-gallery",
-  storageBucket: "mini-nas-gallery.firebasestorage.app",
-  messagingSenderId: "808392703566",
-  appId: "1:808392703566:web:591561fb59ac47cf3b4d1f"
+  apiKey: "AIzaSyAG78MmNwtvXpPqvUfsKvBLHeIcgHVBMBw",
+  authDomain: "rptiles.firebaseapp.com",
+  projectId: "rptiles",
+  storageBucket: "rptiles.firebasestorage.app",
+  messagingSenderId: "1090345023015",
+  appId: "1:1090345023015:web:a1533a49d847587eee0002"
 };
 
 // Initialize Firebase App

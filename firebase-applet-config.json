@@ -1,10 +1,9 @@
 {
-  "projectId": "mini-nas-gallery",
-  "appId": "1:808392703566:web:591561fb59ac47cf3b4d1f",
-  "apiKey": "AIzaSyA6Z44IHkvLfRChU-mGz0IBcZqqxWr0xB0",
-  "authDomain": "mini-nas-gallery.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-a9c5be55-bdb4-4c2e-b82a-98857d86b9c7",
-  "storageBucket": "mini-nas-gallery.firebasestorage.app",
-  "messagingSenderId": "808392703566",
+  "projectId": "rptiles",
+  "appId": "1:1090345023015:web:a1533a49d847587eee0002",
+  "apiKey": "AIzaSyAG78MmNwtvXpPqvUfsKvBLHeIcgHVBMBw",
+  "authDomain": "rptiles.firebaseapp.com",
+  "storageBucket": "rptiles.firebasestorage.app",
+  "messagingSenderId": "1090345023015",
   "measurementId": ""
 }
