@@ -131,6 +131,8 @@ export interface TranslationDict {
   authCredentials: string;
   establishSession: string;
   backToShowroom: string;
+  commercialProposal: string;
+  warehouseDispatch: string;
 }
 
 export const TRANSLATIONS: Record<Language, TranslationDict> = {
@@ -140,6 +142,8 @@ export const TRANSLATIONS: Record<Language, TranslationDict> = {
     warehouseInventory: "Warehouse Inventory Console",
     posBilling: "POS Billing Desk",
     customerLedger: "Customer Ledger & Outstanding Book",
+    commercialProposal: "Commercial Proposal",
+    warehouseDispatch: "Warehouse Dispatch",
     appTitle: "RP Tiles Luxury Depot",
     adminTitle: "Administrative Panel Console",
     resetDefaults: "Reset Defaults",
@@ -372,7 +376,9 @@ export const TRANSLATIONS: Record<Language, TranslationDict> = {
     passLabel: "एक्सेस सुरक्षा पासवर्ड",
     authCredentials: "डेमो लॉगिन क्रेडेंशियल्स:",
     establishSession: "एडमिन सेशन शुरू करें",
-    backToShowroom: "पब्लिक शोरूम वापस जाएं"
+    backToShowroom: "पब्लिक शोरूम वापस जाएं",
+    commercialProposal: "व्यवसायिक प्रस्ताव",
+    warehouseDispatch: "गोदाम माल निकासी"
   },
   hinglish: {
     digitalShowroom: "Grahak Showroom",
@@ -380,6 +386,8 @@ export const TRANSLATIONS: Record<Language, TranslationDict> = {
     warehouseInventory: "Godown Ka Stock",
     posBilling: "Naya Bill Desk",
     customerLedger: "Khata Book (Udhaar Register)",
+    commercialProposal: "Commercial Proposal",
+    warehouseDispatch: "Godown Dispatch & Verification",
     appTitle: "RP Tiles Luxury Depot",
     adminTitle: "Admin Panel Console",
     resetDefaults: "Defaults Lagao",

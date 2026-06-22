@@ -5,6 +5,9 @@
 
 import { useState, useEffect } from 'react';
 import { Product, Category, StockMovement } from './types';
+import { collection, onSnapshot, setDoc, doc, deleteDoc, getDocs } from 'firebase/firestore';
+import { db, auth } from './firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { DEFAULT_PRODUCTS } from './data/defaultProducts';
 import CatalogView from './components/CatalogView';
 import TileVisualizer from './components/TileVisualizer';
@@ -13,10 +16,12 @@ import BillingSystem from './components/BillingSystem';
 import CustomerLedger from './components/CustomerLedger';
 import LandingPage from './components/LandingPage';
 import AdminLogin from './components/AdminLogin';
+import CommercialProposal from './components/CommercialProposal';
+import WarehouseDispatch from './components/WarehouseDispatch';
 import { 
   Building, BookOpen, Layers, Settings, AppWindow, Clock, 
   RotateCcw, Info, Compass, HelpCircle, Package, Receipt, ArrowLeft,
-  Smartphone, QrCode, X, DollarSign, LogOut
+  Smartphone, QrCode, X, DollarSign, LogOut, FileText, Coins, Truck
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { Language, TRANSLATIONS } from './data/translations';
@@ -71,7 +76,8 @@ export default function App() {
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
     return sessionStorage.getItem('ceramica_admin_logged_in') === 'true';
   });
-  const [activeTab, setActiveTab] = useState<'catalog' | 'visualizer' | 'inventory' | 'billing' | 'ledger'>('catalog');
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState<'catalog' | 'visualizer' | 'inventory' | 'billing' | 'ledger' | 'proposal' | 'dispatch'>('catalog');
   // Public sub-tabs: Home overview, digital showroom catalog, interactive tiling simulator
   const [publicTab, setPublicTab] = useState<'home' | 'showroom' | 'visualizer'>('home');
   
@@ -90,38 +96,57 @@ export default function App() {
   const [connectQrUrl, setConnectQrUrl] = useState<string>('');
 
   useEffect(() => {
-    // Load products
-    const savedProducts = localStorage.getItem(LOCAL_STORAGE_PRODUCTS_KEY);
-    if (savedProducts) {
-      try {
-        const parsed: Product[] = JSON.parse(savedProducts);
-        const existingIds = new Set(parsed.map(p => p.id));
-        const missingDefaults = DEFAULT_PRODUCTS.filter(dp => !existingIds.has(dp.id));
-        if (missingDefaults.length > 0) {
-          const merged = [...parsed, ...missingDefaults];
-          setProducts(merged);
-          localStorage.setItem(LOCAL_STORAGE_PRODUCTS_KEY, JSON.stringify(merged));
-        } else {
-          setProducts(parsed);
-        }
-      } catch (e) {
-        setProducts(DEFAULT_PRODUCTS);
+    // 0. Listen to Authentication State changes in real-time
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setIsAdminAuthenticated(true);
+        setCurrentUser(user);
+        sessionStorage.setItem('ceramica_admin_logged_in', 'true');
+      } else {
+        setIsAdminAuthenticated(false);
+        setCurrentUser(null);
+        sessionStorage.removeItem('ceramica_admin_logged_in');
       }
-    } else {
-      setProducts(DEFAULT_PRODUCTS);
-    }
+    });
 
-    // Load transactional movements
-    const savedMovements = localStorage.getItem(LOCAL_STORAGE_MOVEMENTS_KEY);
-    if (savedMovements) {
-      try {
-        setMovements(JSON.parse(savedMovements));
-      } catch (e) {
-        setMovements(INITIAL_MOVEMENTS);
+    // 1. Listen to products in real-time
+    const unsubscribeProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
+      if (snapshot.empty) {
+        // Seed DEFAULT_PRODUCTS to Firestore
+        DEFAULT_PRODUCTS.forEach(async (p) => {
+          await setDoc(doc(db, 'products', p.id), p);
+        });
+        setProducts(DEFAULT_PRODUCTS);
+      } else {
+        const prodList: Product[] = [];
+        snapshot.forEach((doc) => {
+          prodList.push(doc.data() as Product);
+        });
+        setProducts(prodList);
       }
-    } else {
-      setMovements(INITIAL_MOVEMENTS);
-    }
+    }, (error) => {
+      console.error("Error reading products:", error);
+    });
+
+    // 2. Listen to movements in real-time
+    const unsubscribeMovements = onSnapshot(collection(db, 'movements'), (snapshot) => {
+      if (snapshot.empty) {
+        // Seed INITIAL_MOVEMENTS to Firestore
+        INITIAL_MOVEMENTS.forEach(async (m) => {
+          await setDoc(doc(db, 'movements', m.id), m);
+        });
+        setMovements(INITIAL_MOVEMENTS);
+      } else {
+        const movList: StockMovement[] = [];
+        snapshot.forEach((doc) => {
+          movList.push(doc.data() as StockMovement);
+        });
+        movList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        setMovements(movList);
+      }
+    }, (error) => {
+      console.error("Error reading movements:", error);
+    });
 
     // Static formatted date placeholder
     setCurrentTime(new Date('2026-06-17T06:01:41-07:00').toLocaleDateString('en-US', {
@@ -141,7 +166,7 @@ export default function App() {
         setCurrentView('admin');
         const searchParams = new URLSearchParams(hash.split('?')[1] || '');
         const tab = searchParams.get('tab');
-        if (tab === 'catalog' || tab === 'visualizer' || tab === 'inventory' || tab === 'billing') {
+        if (tab === 'catalog' || tab === 'visualizer' || tab === 'inventory' || tab === 'billing' || tab === 'ledger' || tab === 'proposal' || tab === 'dispatch') {
           setActiveTab(tab as any);
         }
       } else {
@@ -150,7 +175,12 @@ export default function App() {
       }
     };
     window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    return () => {
+      unsubscribeAuth();
+      unsubscribeProducts();
+      unsubscribeMovements();
+      window.removeEventListener('hashchange', handleHashChange);
+    };
   }, []);
 
   // Dynamically generate the mobile connection QR Code when modal opens
@@ -175,19 +205,8 @@ export default function App() {
     }
   }, [showConnectModal]);
 
-  // Update localStorage when lists change
-  const saveToLocalStorage = (newProducts: Product[]) => {
-    localStorage.setItem(LOCAL_STORAGE_PRODUCTS_KEY, JSON.stringify(newProducts));
-    setProducts(newProducts);
-  };
-
-  const saveMovementsToLocalStorage = (newMovs: StockMovement[]) => {
-    localStorage.setItem(LOCAL_STORAGE_MOVEMENTS_KEY, JSON.stringify(newMovs));
-    setMovements(newMovs);
-  };
-
   // Switch hash route helper
-  const navigateWithHash = (view: 'landing' | 'admin', tab?: 'catalog' | 'visualizer' | 'inventory' | 'billing' | 'ledger') => {
+  const navigateWithHash = (view: 'landing' | 'admin', tab?: 'catalog' | 'visualizer' | 'inventory' | 'billing' | 'ledger' | 'proposal' | 'dispatch') => {
     if (view === 'admin') {
       const targetTab = tab || activeTab;
       window.location.hash = `admin?tab=${targetTab}`;
@@ -201,15 +220,12 @@ export default function App() {
   };
 
   // Add a new product
-  const handleAddProduct = (payload: Omit<Product, 'id'>) => {
+  const handleAddProduct = async (payload: Omit<Product, 'id'>) => {
     const newProduct: Product = {
       ...payload,
       id: 'p-' + Math.random().toString(36).substring(2, 9)
     };
-    const updated = [newProduct, ...products];
-    saveToLocalStorage(updated);
-
-    // Also write a transaction movement
+    
     const movementLog: StockMovement = {
       id: 'mov-' + Math.random().toString(36).substring(2, 9),
       productId: newProduct.id,
@@ -220,24 +236,29 @@ export default function App() {
       reason: 'Enlisted new catalog SKU into main storage',
       timestamp: new Date().toISOString()
     };
-    saveMovementsToLocalStorage([...movements, movementLog]);
+
+    try {
+      await setDoc(doc(db, 'products', newProduct.id), newProduct);
+      await setDoc(doc(db, 'movements', movementLog.id), movementLog);
+    } catch (e) {
+      console.error("Error adding product:", e);
+    }
   };
 
   // Update an existing product
-  const handleUpdateProduct = (updatedProd: Product) => {
-    const updated = products.map(p => p.id === updatedProd.id ? updatedProd : p);
-    saveToLocalStorage(updated);
+  const handleUpdateProduct = async (updatedProd: Product) => {
+    try {
+      await setDoc(doc(db, 'products', updatedProd.id), updatedProd);
+    } catch (e) {
+      console.error("Error updating product:", e);
+    }
   };
 
   // Delete product
-  const handleDeleteProduct = (id: string) => {
+  const handleDeleteProduct = async (id: string) => {
     const productToDelete = products.find(p => p.id === id);
     if (!productToDelete) return;
 
-    const updated = products.filter(p => p.id !== id);
-    saveToLocalStorage(updated);
-
-    // Track movement
     const log: StockMovement = {
       id: 'mov-' + Math.random().toString(36).substring(2, 9),
       productId: id,
@@ -248,19 +269,31 @@ export default function App() {
       reason: 'SKU deleted and purged permanently from digital catalog listings',
       timestamp: new Date().toISOString()
     };
-    saveMovementsToLocalStorage([...movements, log]);
+
+    try {
+      await deleteDoc(doc(db, 'products', id));
+      await setDoc(doc(db, 'movements', log.id), log);
+    } catch (e) {
+      console.error("Error deleting product:", e);
+    }
   };
 
   // Adjust stock totals (Plus / Minus / Audit reset)
-  const handleUpdateStock = (
+  const handleUpdateStock = async (
     id: string, 
     quantity: number, 
     type: 'IN' | 'OUT' | 'ADJUST', 
     reason: string
   ) => {
-    // If clearing logs requested
     if (reason === 'CLEAR_ALL_LOGS') {
-      saveMovementsToLocalStorage([]);
+      try {
+        const snapshot = await getDocs(collection(db, 'movements'));
+        snapshot.forEach(async (d) => {
+          await deleteDoc(doc(db, 'movements', d.id));
+        });
+      } catch (e) {
+        console.error("Error clearing logs:", e);
+      }
       return;
     }
 
@@ -276,15 +309,6 @@ export default function App() {
       newStock = quantity;
     }
 
-    const updatedCatalog = products.map(p => {
-      if (p.id === id) {
-        return { ...p, stock: newStock };
-      }
-      return p;
-    });
-    saveToLocalStorage(updatedCatalog);
-
-    // Log the transaction movement safely
     const log: StockMovement = {
       id: 'mov-' + Math.random().toString(36).substring(2, 9),
       productId: id,
@@ -295,7 +319,13 @@ export default function App() {
       reason,
       timestamp: new Date().toISOString()
     };
-    saveMovementsToLocalStorage([...movements, log]);
+
+    try {
+      await setDoc(doc(db, 'products', id), { ...item, stock: newStock });
+      await setDoc(doc(db, 'movements', log.id), log);
+    } catch (e) {
+      console.error("Error updating stock:", e);
+    }
   };
 
   // Inline adjustment specifically from specification drawer sheet shortcut
@@ -311,14 +341,31 @@ export default function App() {
   };
 
   // Reset to showroom defaults trigger
-  const handleFactoryReset = () => {
+  const handleFactoryReset = async () => {
     if (window.confirm('Reset catalog database back to standard default collections? Your custom items, adjustments, billing history and logs will be wiped.')) {
-      localStorage.removeItem(LOCAL_STORAGE_PRODUCTS_KEY);
-      localStorage.removeItem(LOCAL_STORAGE_MOVEMENTS_KEY);
-      setProducts(DEFAULT_PRODUCTS);
-      setMovements(INITIAL_MOVEMENTS);
-      setVisualizeProduct(undefined);
-      navigateWithHash('admin', 'catalog');
+      try {
+        const prodSnap = await getDocs(collection(db, 'products'));
+        for (const d of prodSnap.docs) {
+          await deleteDoc(doc(db, 'products', d.id));
+        }
+        const movSnap = await getDocs(collection(db, 'movements'));
+        for (const d of movSnap.docs) {
+          await deleteDoc(doc(db, 'movements', d.id));
+        }
+
+        for (const p of DEFAULT_PRODUCTS) {
+          await setDoc(doc(db, 'products', p.id), p);
+        }
+
+        for (const m of INITIAL_MOVEMENTS) {
+          await setDoc(doc(db, 'movements', m.id), m);
+        }
+
+        setVisualizeProduct(undefined);
+        navigateWithHash('admin', 'catalog');
+      } catch (e) {
+        console.error("Error resetting factory defaults:", e);
+      }
     }
   };
 
@@ -513,6 +560,8 @@ export default function App() {
                   <span className="cursor-pointer hover:text-stone-300 animate-pulse underline" onClick={() => navigateWithHash('admin', 'catalog')}>Admin Log In</span>
                   <span>•</span>
                   <span className="cursor-pointer hover:text-stone-300 underline" onClick={() => navigateWithHash('admin', 'billing')}>Access POS</span>
+                  <span>•</span>
+                  <span className="cursor-pointer text-amber-400 hover:text-amber-300 underline font-bold" onClick={() => navigateWithHash('admin', 'proposal')}>View ERP Proposal (120K)</span>
                 </div>
               </div>
             </footer>
@@ -563,6 +612,8 @@ export default function App() {
                   <span className="cursor-pointer hover:text-stone-300 animate-pulse underline" onClick={() => navigateWithHash('admin', 'catalog')}>Admin Log In</span>
                   <span>•</span>
                   <span className="cursor-pointer hover:text-stone-300 underline" onClick={() => navigateWithHash('admin', 'billing')}>Access POS</span>
+                  <span>•</span>
+                  <span className="cursor-pointer text-amber-400 hover:text-amber-300 underline font-bold" onClick={() => navigateWithHash('admin', 'proposal')}>View ERP Proposal (120K)</span>
                 </div>
               </div>
             </footer>
@@ -659,12 +710,22 @@ export default function App() {
             <span className="hidden sm:inline">Reset Defaults</span>
           </button>
 
+          {currentUser && (
+            <div className="hidden md:flex items-center space-x-1.5 px-3 py-1.5 bg-stone-100 text-stone-700 rounded-xl text-xs font-mono border border-stone-200/80">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="max-w-[140px] truncate font-semibold" title={currentUser.email}>{currentUser.email}</span>
+            </div>
+          )}
+
           <button
             id="btn-admin-logout"
-            onClick={() => {
-              setIsAdminAuthenticated(false);
-              sessionStorage.removeItem('ceramica_admin_logged_in');
-              navigateWithHash('landing');
+            onClick={async () => {
+              try {
+                await signOut(auth);
+                navigateWithHash('landing');
+              } catch (e) {
+                console.error("Error signing out:", e);
+              }
             }}
             className="flex items-center space-x-1 px-3 py-1.5 text-xs text-rose-700 hover:text-rose-900 border border-rose-200 bg-rose-50/50 hover:bg-rose-50 rounded-xl transition-all cursor-pointer font-bold"
             title="Safely end administrative session"
@@ -755,6 +816,34 @@ export default function App() {
             <DollarSign className="w-4 h-4 text-emerald-400" />
             <span>{TRANSLATIONS[language].customerLedger}</span>
           </button>
+
+          {/* ERP Commercial Proposal Draft tab */}
+          <button
+            id="tab-proposal"
+            onClick={() => navigateWithHash('admin', 'proposal')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 ${
+              activeTab === 'proposal'
+                ? 'bg-stone-900 text-white shadow-sm'
+                : 'text-stone-650 hover:bg-stone-50 hover:text-stone-950'
+            }`}
+          >
+            <FileText className="w-4 h-4 text-amber-400" />
+            <span>{TRANSLATIONS[language].commercialProposal}</span>
+          </button>
+
+          {/* Warehouse Dispatch / Store Counter Delivery tab */}
+          <button
+            id="tab-dispatch"
+            onClick={() => navigateWithHash('admin', 'dispatch')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 ${
+              activeTab === 'dispatch'
+                ? 'bg-stone-900 text-white shadow-sm'
+                : 'text-stone-650 hover:bg-stone-50 hover:text-stone-950'
+            }`}
+          >
+            <Truck className="w-4 h-4 text-[#f43f5e]" />
+            <span>{TRANSLATIONS[language].warehouseDispatch}</span>
+          </button>
         </div>
 
         {/* Small hint label */}
@@ -764,6 +853,8 @@ export default function App() {
           {activeTab === 'inventory' && '📊 Quick restock alerts and transactional audits logged securely.'}
           {activeTab === 'billing' && '🧾 Cart updates immediately subtract stock units with tax invoice printouts.'}
           {activeTab === 'ledger' && '💼 View historical outstanding client debt registers and issue cash clears.'}
+          {activeTab === 'proposal' && '📑 Live interactive quotation builder customized for tile showroom contracts.'}
+          {activeTab === 'dispatch' && '🚚 Verify and checkout customer orders securely at godown gates.'}
         </div>
       </nav>
 
@@ -810,6 +901,19 @@ export default function App() {
 
         {activeTab === 'ledger' && (
           <CustomerLedger
+            products={products}
+            language={language}
+          />
+        )}
+
+        {activeTab === 'proposal' && (
+          <CommercialProposal
+            language={language}
+          />
+        )}
+
+        {activeTab === 'dispatch' && (
+          <WarehouseDispatch
             products={products}
             language={language}
           />

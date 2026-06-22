@@ -22,6 +22,8 @@ import {
   Clock
 } from 'lucide-react';
 import { Product } from '../types';
+import { collection, onSnapshot, setDoc, doc, deleteDoc, getDocs } from 'firebase/firestore';
+import { db } from '../firebase';
 import { Language, TRANSLATIONS } from '../data/translations';
 
 interface InvoiceItem {
@@ -104,27 +106,23 @@ export default function CustomerLedger({ products, language }: CustomerLedgerPro
   const [payName, setPayName] = useState('');
   const [entryType, setEntryType] = useState<'credit' | 'debit'>('credit');
 
-  // Initial Load & syncing
+  // Initial Load & syncing in real-time from Firestore database
   useEffect(() => {
-    const loadData = () => {
-      // Invoices
-      const savedInvoices = localStorage.getItem(LOCAL_STORAGE_INVOICES_KEY);
-      if (savedInvoices) {
-        try {
-          setInvoices(JSON.parse(savedInvoices));
-        } catch (_) {}
-      } else {
-        setInvoices([]);
-      }
+    // 1. Listen to invoices
+    const unsubscribeInvoices = onSnapshot(collection(db, 'invoices'), (snapshot) => {
+      const invList: Invoice[] = [];
+      snapshot.forEach((doc) => {
+        invList.push(doc.data() as Invoice);
+      });
+      invList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setInvoices(invList);
+    }, (error) => {
+      console.error("Error reading invoices in CustomerLedger:", error);
+    });
 
-      // Payments
-      const savedPayments = localStorage.getItem(LOCAL_STORAGE_PAYMENTS_KEY);
-      if (savedPayments) {
-        try {
-          setPayments(JSON.parse(savedPayments));
-        } catch (_) {}
-      } else {
-        // Seed default template payments if first session, for realistic look
+    // 2. Listen to customer payments
+    const unsubscribePayments = onSnapshot(collection(db, 'customer_payments'), (snapshot) => {
+      if (snapshot.empty) {
         const seedPayments: CustomerPayment[] = [
           {
             id: 'pay-7719a',
@@ -145,16 +143,26 @@ export default function CustomerLedger({ products, language }: CustomerLedgerPro
             remarks: 'Slab structural balance settlement'
           }
         ];
-        localStorage.setItem(LOCAL_STORAGE_PAYMENTS_KEY, JSON.stringify(seedPayments));
+        seedPayments.forEach(async (p) => {
+          await setDoc(doc(db, 'customer_payments', p.id), p);
+        });
         setPayments(seedPayments);
+      } else {
+        const payList: CustomerPayment[] = [];
+        snapshot.forEach((doc) => {
+          payList.push(doc.data() as CustomerPayment);
+        });
+        payList.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        setPayments(payList);
       }
-    };
+    }, (error) => {
+      console.error("Error reading payments in CustomerLedger:", error);
+    });
 
-    loadData();
-    
-    // Listen to sales update events
-    window.addEventListener('storage', loadData);
-    return () => window.removeEventListener('storage', loadData);
+    return () => {
+      unsubscribeInvoices();
+      unsubscribePayments();
+    };
   }, []);
 
   // Compute a list of unique customer accounts based on checkout invoices & payments
@@ -243,7 +251,7 @@ export default function CustomerLedger({ products, language }: CustomerLedgerPro
   }, [invoices, payments]);
 
   // Handle Recording of custom payment receipts
-  const handleSavePaymentInput = (e: React.FormEvent) => {
+  const handleSavePaymentInput = async (e: React.FormEvent) => {
     e.preventDefault();
     const amount = parseFloat(payAmount);
     if (isNaN(amount) || amount <= 0) {
@@ -262,9 +270,11 @@ export default function CustomerLedger({ products, language }: CustomerLedgerPro
       type: entryType
     };
 
-    const updated = [nextPayment, ...payments];
-    localStorage.setItem(LOCAL_STORAGE_PAYMENTS_KEY, JSON.stringify(updated));
-    setPayments(updated);
+    try {
+      await setDoc(doc(db, 'customer_payments', nextPayment.id), nextPayment);
+    } catch (err) {
+      console.error("Error writing payment to Firestore:", err);
+    }
 
     // Update the selected customer view state live if applicable
     if (selectedCustomer) {

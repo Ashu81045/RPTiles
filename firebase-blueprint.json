@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Product SKU item details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "subcategory": { "type": "string" },
+        "code": { "type": "string" },
+        "size": { "type": "string" },
+        "surface": { "type": "string" },
+        "thickness": { "type": "string" },
+        "price": { "type": "number" },
+        "perBoxFeet": { "type": "number" },
+        "perBoxTiles": { "type": "number" },
+        "stock": { "type": "number" },
+        "image": { "type": "string" }
+      },
+      "required": ["id", "name", "price", "stock"]
+    },
+    "StockMovement": {
+      "title": "StockMovement",
+      "description": "Stock adjustment history ledger entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "productId": { "type": "string" },
+        "quantity": { "type": "number" },
+        "type": { "type": "string", "enum": ["IN", "OUT", "ADJUST"] },
+        "reason": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "productId", "quantity", "type", "timestamp"]
+    },
+    "Draft": {
+      "title": "Draft",
+      "description": "Saved incomplete shopping draft bills",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "cart": { "type": "array" },
+        "customerName": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "discountPercent": { "type": "number" },
+        "gstPercent": { "type": "number" },
+        "timestamp": { "type": "string" }
+      }
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Finalized checkout invoices",
+      "type": "object",
+      "properties": {
+        "invoiceNumber": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "cart": { "type": "array" },
+        "totals": { "type": "object" },
+        "deliveryStatus": { "type": "string" },
+        "paidAmount": { "type": "number" },
+        "dueAmount": { "type": "number" }
+      }
+    },
+    "CustomerPayment": {
+      "title": "CustomerPayment",
+      "description": "Customer ledger receipt records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "remarks": { "type": "string" },
+        "type": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "products/{id}": {
+      "schema": "Product",
+      "description": "Catalog of ceramic tile collections"
+    },
+    "movements/{id}": {
+      "schema": "StockMovement",
+      "description": "Audit trail log of physical movements"
+    },
+    "drafts/{id}": {
+      "schema": "Draft",
+      "description": "Temporary shopping cart sessions savepoints"
+    },
+    "invoices/{invoiceNumber}": {
+      "schema": "Invoice",
+      "description": "Final legal sales ledger entries"
+    },
+    "customer_payments/{id}": {
+      "schema": "CustomerPayment",
+      "description": "Customer payment receipt history records"
+    }
+  }
+}

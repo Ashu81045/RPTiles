@@ -5,13 +5,15 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Product } from '../types';
+import { collection, onSnapshot, setDoc, doc, deleteDoc, getDocs } from 'firebase/firestore';
+import { db } from '../firebase';
 import { Language, TRANSLATIONS } from '../data/translations';
 import { Html5Qrcode } from 'html5-qrcode';
 import { 
   Search, Plus, Minus, Trash2, Printer, FileText, 
   ShoppingCart, User, Phone, CheckCircle, CreditCard, Book,
   Receipt, Landmark, Coins, ChevronRight, Sparkles, X, Compass, MapPin,
-  IndianRupee, TrendingUp, History, QrCode, Smartphone
+  IndianRupee, TrendingUp, History, QrCode, Smartphone, Save
 } from 'lucide-react';
 
 const LOCAL_STORAGE_INVOICES_KEY = 'ceramica_catalog_invoices';
@@ -170,6 +172,7 @@ interface Invoice {
   // Part payments
   paidAmount: number;
   dueAmount: number;
+  deliveryStatus?: 'Pending' | 'Delivered';
 }
 
 function numberToIndianWords(num: number): string {
@@ -266,6 +269,26 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
   const [currentInvoice, setCurrentInvoice] = useState<Invoice | null>(null);
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
 
+  // Drafts state
+  const [drafts, setDrafts] = useState<any[]>([]);
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+
+  // Load drafts from Firestore in real-time on mount
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'drafts'), (snapshot) => {
+      const draftList: any[] = [];
+      snapshot.forEach((doc) => {
+        draftList.push(doc.data());
+      });
+      setDrafts(draftList);
+    }, (error) => {
+      console.error("Error reading drafts:", error);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const [billingMode, setBillingMode] = useState<'showroom' | 'store'>('showroom');
+
   // Invoices Register & Sub-Tabs State
   const [billingSubTab, setBillingSubTab] = useState<'checkout' | 'insights'>('checkout');
 
@@ -279,7 +302,7 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
   const [wastagePercent, setWastagePercent] = useState<string>('10');
   
   // Real-time Barcode / QR Code Scanner Simulation states
-  const [isScannerOpen, setIsScannerOpen] = useState(true);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [manualScanInput, setManualScanInput] = useState('');
   const [scanStatus, setScanStatus] = useState<{ text: string; type: 'success' | 'error' | 'idle' }>({
     text: 'Scanner Standby - READY',
@@ -512,39 +535,48 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
   };
 
   const [invoiceSearchQuery, setInvoiceSearchQuery] = useState('');
-  const [invoices, setInvoices] = useState<Invoice[]>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_INVOICES_KEY);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return DEFAULT_INVOICES;
-      }
-    }
-    return DEFAULT_INVOICES;
-  });
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
 
   // Customer Ledger directory search and lookup
   const [payments, setPayments] = useState<any[]>([]);
   const [ledgerSearch, setLedgerSearch] = useState('');
   const [showLedgerDropdown, setShowLedgerDropdown] = useState(false);
 
+  // Subscribe to invoices real-time updates
   useEffect(() => {
-    const syncPayments = () => {
-      const saved = localStorage.getItem('ceramica_catalog_customer_payments');
-      if (saved) {
-        try {
-          setPayments(JSON.parse(saved));
-        } catch (_) {}
+    const unsubscribe = onSnapshot(collection(db, 'invoices'), (snapshot) => {
+      if (snapshot.empty) {
+        // Seed DEFAULT_INVOICES to Firestore
+        DEFAULT_INVOICES.forEach(async (inv) => {
+          await setDoc(doc(db, 'invoices', inv.invoiceNumber), inv);
+        });
+        setInvoices(DEFAULT_INVOICES);
       } else {
-        setPayments([]);
+        const invList: Invoice[] = [];
+        snapshot.forEach((doc) => {
+          invList.push(doc.data() as Invoice);
+        });
+        invList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        setInvoices(invList);
       }
-    };
-    syncPayments();
-    window.addEventListener('storage', syncPayments);
-    return () => {
-      window.removeEventListener('storage', syncPayments);
-    };
+    }, (error) => {
+      console.error("Error reading invoices:", error);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Subscribe to customer payments real-time updates
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'customer_payments'), (snapshot) => {
+      const payList: any[] = [];
+      snapshot.forEach((doc) => {
+        payList.push(doc.data());
+      });
+      setPayments(payList);
+    }, (error) => {
+      console.error("Error reading payments:", error);
+    });
+    return () => unsubscribe();
   }, []);
 
   // Compute unique customers and balances
@@ -769,11 +801,77 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
     };
   }, [cart, discountPercent, gstPercent, loadingCharges, labourCharges, otherCharges]);
 
+  // Draft Actions
+  const handleSaveAsDraft = async () => {
+    if (cart.length === 0) {
+      alert("Cannot save an empty cart as draft. Choose materials first.");
+      return;
+    }
+    
+    const draftId = activeDraftId || `DFT-${Math.floor(100 + Math.random() * 900)}-${Date.now().toString().slice(-4)}`;
+    const newDraft = {
+      id: draftId,
+      customerName: customerName.trim() || 'Untitled Draft Client',
+      customerPhone: customerPhone.trim() || 'N/A',
+      customerAddress: customerAddress.trim() || 'N/A',
+      cart: cart,
+      discountPercent: discountPercent,
+      gstPercent: gstPercent,
+      loadingCharges: loadingCharges,
+      labourCharges: labourCharges,
+      otherCharges: otherCharges,
+      otherChargesRemarks: otherChargesRemarks,
+      paidAmountInput: paidAmountInput,
+      paymentMethod: paymentMethod,
+      timestamp: new Date().toISOString()
+    };
+
+    try {
+      await setDoc(doc(db, 'drafts', draftId), newDraft);
+      setActiveDraftId(draftId);
+      alert(`Draft Bill stored successfully in cloud! ID: ${draftId}`);
+      playScanBeep();
+    } catch (e) {
+      console.error("Error saving draft:", e);
+    }
+  };
+
+  const handleLoadDraft = (draft: any) => {
+    setActiveDraftId(draft.id);
+    setCustomerName(draft.customerName || '');
+    setCustomerPhone(draft.customerPhone || '');
+    setCustomerAddress(draft.customerAddress || '');
+    setCart(draft.cart || []);
+    setDiscountPercent(draft.discountPercent || 0);
+    setGstPercent(draft.gstPercent || 18);
+    setLoadingCharges(draft.loadingCharges || 0);
+    setLabourCharges(draft.labourCharges || 0);
+    setOtherCharges(draft.otherCharges || 0);
+    setOtherChargesRemarks(draft.otherChargesRemarks || '');
+    setPaidAmountInput(draft.paidAmountInput || '');
+    setPaymentMethod(draft.paymentMethod || 'Cash');
+    playScanBeep();
+  };
+
+  const handleDeleteDraft = async (draftId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm("Are you sure you want to delete this draft?")) return;
+    try {
+      await deleteDoc(doc(db, 'drafts', draftId));
+      if (activeDraftId === draftId) {
+        setActiveDraftId(null);
+      }
+      playScanBeep();
+    } catch (e) {
+      console.error("Error deleting draft:", e);
+    }
+  };
+
   const actualPaidAmount = paidAmountInput === '' ? calculatedTotals.grandTotal : (parseFloat(paidAmountInput) || 0);
   const calculatedDueAmount = Math.max(0, calculatedTotals.grandTotal - actualPaidAmount);
 
   // Process and Submit Real Invoice
-  const handleProcessAndPay = (e: React.FormEvent) => {
+  const handleProcessAndPay = async (e: React.FormEvent) => {
     e.preventDefault();
     if (cart.length === 0) {
       alert('Your billing cart is empty. Please select products from the left panel to begin.');
@@ -838,8 +936,19 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
       
       // Part payments deposition
       paidAmount: actualPaidAmount,
-      dueAmount: calculatedDueAmount
+      dueAmount: calculatedDueAmount,
+      deliveryStatus: 'Pending'
     };
+
+    // Clean up active billing drafts if matched in Firestore
+    if (activeDraftId) {
+      try {
+        await deleteDoc(doc(db, 'drafts', activeDraftId));
+        setActiveDraftId(null);
+      } catch (err) {
+        console.error("Error deleting draft:", err);
+      }
+    }
 
     // Substract Stock counts permanently from Main Inventory!
     cart.forEach(item => {
@@ -851,14 +960,16 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
       );
     });
 
+    // Write invoice to Firestore database
+    try {
+      await setDoc(doc(db, 'invoices', preparedInvoice.invoiceNumber), preparedInvoice);
+    } catch (err) {
+      console.error("Error writing invoice to Firestore:", err);
+    }
+
     // Clear state & show high fidelity invoice layout
     setCurrentInvoice(preparedInvoice);
     setIsSuccessModalOpen(true);
-    setInvoices(prev => {
-      const updated = [preparedInvoice, ...prev];
-      localStorage.setItem(LOCAL_STORAGE_INVOICES_KEY, JSON.stringify(updated));
-      return updated;
-    });
     setCart([]);
     setCustomerName('');
     setCustomerPhone('');
@@ -932,7 +1043,7 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
         
         {/* Left Column: Product Catalog Section (lg:col-span-7) */}
         <div className="lg:col-span-7 space-y-4" id="pos-search-panel">
-          <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden shadow-sm">
+          <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden shadow-sm transition-all duration-305">
             {/* Inline Scanner Animations Style sheet */}
             <style>{`
               @keyframes scanLineSweep {
@@ -942,208 +1053,240 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
               }
             `}</style>
 
-            {/* Header / Config Bar */}
-            <div className="bg-stone-900 px-4 py-3 flex items-center justify-between text-white border-b border-stone-800">
-              <div className="flex items-center space-x-2">
-                <span className="flex h-2 w-2 relative">
-                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isScannerOpen ? 'bg-emerald-400' : 'bg-stone-500'}`}></span>
-                  <span className={`relative inline-flex rounded-full h-2 w-2 ${isScannerOpen ? 'bg-emerald-400' : 'bg-stone-400'}`}></span>
-                </span>
-                <span className="text-xs font-bold uppercase tracking-wider font-sans">
-                  Camera Barcode Scanner
-                </span>
-              </div>
-              
-              <button
-                type="button"
+            {!isScannerOpen ? (
+              <div 
                 onClick={() => {
-                  setIsScannerOpen(!isScannerOpen);
+                  setIsScannerOpen(true);
                   playScanBeep();
                 }}
-                className={`px-3 py-1 text-xs rounded-lg font-medium transition-all cursor-pointer border ${
-                  isScannerOpen 
-                    ? 'bg-stone-800 hover:bg-stone-700 border-stone-700 text-stone-200' 
-                    : 'bg-emerald-600 hover:bg-emerald-700 border-emerald-500 text-white'
-                }`}
+                className="p-5.5 bg-gradient-to-br from-stone-50 via-amber-50/10 to-stone-50/50 border-2 border-dashed border-stone-300 hover:border-amber-400 hover:bg-amber-100/10 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 cursor-pointer transition-all duration-300 group shadow-3xs"
+                id="camera-scanner-welcome-card"
               >
-                <span>{isScannerOpen ? 'Turn Off Camera' : 'Turn On Camera'}</span>
-              </button>
-            </div>
-
-            {isScannerOpen && (
-              <div className="p-4 bg-stone-50 space-y-4 font-sans text-xs">
-                {/* Camera Permission/Fail Error banner */}
-                {cameraError && (
-                  <div className="bg-rose-50 border border-rose-250 rounded-xl p-3 text-rose-800 text-[11px] font-sans flex items-start space-x-3">
-                    <span className="text-rose-700 font-bold uppercase tracking-wider shrink-0">Note:</span>
-                    <p className="flex-1 leading-normal font-medium">{cameraError}</p>
-                    <button
-                      type="button"
-                      onClick={() => setCameraError(null)}
-                      className="text-[10px] font-bold text-stone-500 hover:text-stone-900 ml-1.5 cursor-pointer bg-transparent border-none"
-                    >
-                      Dismiss
-                    </button>
+                <div className="flex items-center space-x-4">
+                  <div className="w-12 h-12 rounded-2xl bg-stone-900 text-amber-400 flex items-center justify-center shadow-sm group-hover:scale-105 group-hover:bg-amber-400 group-hover:text-stone-950 transition-all duration-350 shrink-0">
+                    <QrCode className="w-6 h-6 animate-pulse" />
                   </div>
-                )}
-
-                {/* Active scan status */}
-                <div className={`p-2.5 rounded-xl border flex items-center space-x-2 transition-all duration-300 ${
-                  scanStatus.type === 'success' 
-                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-medium' 
-                    : scanStatus.type === 'error'
-                    ? 'bg-rose-50 border-rose-200 text-rose-900 font-medium'
-                    : 'bg-stone-900 border-stone-800 text-stone-300 font-mono text-[11px]'
-                }`}>
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${scanStatus.type === 'success' ? 'bg-emerald-500 animate-pulse' : scanStatus.type === 'error' ? 'bg-rose-500' : 'bg-amber-400 animate-pulse'}`} />
-                  <p className="truncate flex-1 leading-tight">{scanStatus.text}</p>
+                  <div>
+                    <h3 className="text-xs font-black text-stone-950 uppercase tracking-tight flex items-center gap-2">
+                      <span>📸 {TRANSLATIONS[language]?.digitalShowroom || 'Barcode Checkout'} Scanner</span>
+                      <span className="text-[8px] bg-amber-400 text-stone-950 font-black px-1.5 py-0.2 rounded uppercase">
+                        QR Scan Assist
+                      </span>
+                    </h3>
+                    <p className="text-[10.5px] text-stone-500 leading-normal mt-0.5 max-w-md">
+                      Scan product QR labels on boxes directly via smartphone camera or webcam to add vitrified tile models instantly to your active invoice bill.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="px-4 py-2 text-[11px] font-black bg-stone-950 text-white rounded-xl shadow-sm hover:shadow-md transition-all flex items-center space-x-1.5 shrink-0 border border-stone-850 cursor-pointer"
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span>Start Live Camera</span>
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* Header / Config Bar */}
+                <div className="bg-stone-950 px-4 py-3 flex items-center justify-between text-white border-b border-stone-800">
+                  <div className="flex items-center space-x-2">
+                    <span className="flex h-2 w-2 relative">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 bg-emerald-400 animate-pulse"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                    </span>
+                    <span className="text-xs font-bold uppercase tracking-wider font-sans text-stone-100 flex items-center gap-1.5">
+                      <QrCode className="w-4 h-4 text-amber-400 animate-spin" style={{ animationDuration: '4s' }} />
+                      <span>Camera Scanner Active</span>
+                    </span>
+                  </div>
+                  
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsScannerOpen(false);
+                      playScanBeep();
+                    }}
+                    className="px-3 py-1 text-xs rounded-lg font-bold transition-all cursor-pointer border bg-stone-900 border-stone-800 text-stone-300 hover:text-white hover:bg-stone-800 hover:border-stone-700"
+                  >
+                    <span>Turn Off Camera</span>
+                  </button>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                  
-                  {/* Camera viewports */}
-                  <div className="md:col-span-6 bg-stone-950 rounded-xl relative overflow-hidden h-64 flex flex-col items-center justify-center border border-stone-800 shadow-sm">
-                    <div className="absolute inset-0 flex flex-col justify-end bg-stone-900 overflow-hidden">
-                      <div id="real-camera-scan-region" className="absolute inset-0 w-full h-full object-cover [&_video]:object-cover [&_video]:w-full [&_video]:h-full" />
-                      
-                      {/* Target alignment framing overlay with beautiful borders */}
-                      <div className="absolute inset-x-12 inset-y-12 border-2 border-stone-400/50 rounded-xl pointer-events-none z-10 flex items-center justify-center bg-transparent">
-                        <span className="w-10 h-[2px] bg-emerald-500 shadow-sm animate-pulse flex shrink-0"></span>
-                      </div>
-                      
-                      {/* Clean sweep scan line */}
-                      <div 
-                        className="absolute left-0 right-0 h-[1.5px] bg-emerald-400 shadow-sm z-20 pointer-events-none" 
-                        style={{ animation: 'scanLineSweep 2.5s infinite linear' }}
-                      />
-
-                      <div className="absolute bottom-3 inset-x-0 text-center z-20">
-                        <span className="bg-stone-905 bg-stone-950/80 backdrop-blur-md text-[9.5px] px-2.5 py-1 rounded-md text-emerald-400 font-mono tracking-wider border border-emerald-900">
-                          CAMERA VIEWPORT ACTIVE
-                        </span>
-                      </div>
+                <div className="p-4 bg-stone-50 space-y-4 font-sans text-xs">
+                  {/* Camera Permission/Fail Error banner */}
+                  {cameraError && (
+                    <div className="bg-rose-50 border border-rose-250 rounded-xl p-3 text-rose-800 text-[11px] font-sans flex items-start space-x-3">
+                      <span className="text-rose-700 font-bold uppercase tracking-wider shrink-0">Note:</span>
+                      <p className="flex-1 leading-normal font-medium">{cameraError}</p>
+                      <button
+                        type="button"
+                        onClick={() => setCameraError(null)}
+                        className="text-[10px] font-bold text-stone-500 hover:text-stone-900 ml-1.5 cursor-pointer bg-transparent border-none"
+                      >
+                        Dismiss
+                      </button>
                     </div>
+                  )}
+
+                  {/* Active scan status */}
+                  <div className={`p-2.5 rounded-xl border flex items-center space-x-2 transition-all duration-300 ${
+                    scanStatus.type === 'success' 
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-medium' 
+                      : scanStatus.type === 'error'
+                      ? 'bg-rose-50 border-rose-200 text-rose-900 font-medium'
+                      : 'bg-stone-900 border-stone-800 text-stone-300 font-mono text-[11px]'
+                  }`}>
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${scanStatus.type === 'success' ? 'bg-emerald-500 animate-pulse' : scanStatus.type === 'error' ? 'bg-rose-500' : 'bg-amber-400 animate-pulse'}`} />
+                    <p className="truncate flex-1 leading-tight">{scanStatus.text}</p>
                   </div>
 
-                  {/* Manual Input controls */}
-                  <div className="md:col-span-6 space-y-4 flex flex-col justify-between">
-                    <div>
-                      <label className="block text-[11px] font-bold text-stone-850 uppercase tracking-wider font-sans">
-                        Camera Scan Assist
-                      </label>
-                      <p className="text-[11px] text-stone-500 mt-1 leading-relaxed">
-                        Aim your camera lens directly over any product's printed QR label. The system will look up the model and instantly add it to the active bill below.
-                      </p>
-
-                      {/* Camera Selector Dropdown */}
-                      {availableCameras.length > 1 && (
-                        <div className="mt-3 bg-white border border-stone-200 p-2 rounded-lg">
-                          <label className="block text-[9px] font-bold text-stone-500 uppercase tracking-widest mb-1">
-                            Camera Device Source:
-                          </label>
-                          <select 
-                            value={selectedCameraId}
-                            onChange={(e) => {
-                              setSelectedCameraId(e.target.value);
-                              setCameraError(null);
-                            }}
-                            className="w-full bg-stone-50 border border-stone-200 py-1 px-2 rounded-md text-xs text-stone-800 font-medium focus:outline-none focus:ring-1 focus:ring-stone-500 cursor-pointer"
-                          >
-                            {availableCameras.map(cam => (
-                              <option key={cam.id} value={cam.id}>
-                                {cam.label || `Alternative Device (${cam.id.slice(0, 5)})`}
-                              </option>
-                            ))}
-                          </select>
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                    
+                    {/* Camera viewports */}
+                    <div className="md:col-span-6 bg-stone-950 rounded-xl relative overflow-hidden h-64 flex flex-col items-center justify-center border border-stone-800 shadow-sm">
+                      <div className="absolute inset-0 flex flex-col justify-end bg-stone-900 overflow-hidden">
+                        <div id="real-camera-scan-region" className="absolute inset-0 w-full h-full object-cover [&_video]:object-cover [&_video]:w-full [&_video]:h-full" />
+                        
+                        {/* Target alignment framing overlay with beautiful borders */}
+                        <div className="absolute inset-x-12 inset-y-12 border-2 border-stone-400/50 rounded-xl pointer-events-none z-10 flex items-center justify-center bg-transparent">
+                          <span className="w-10 h-[2px] bg-emerald-500 shadow-sm animate-pulse flex shrink-0"></span>
                         </div>
-                      )}
+                        
+                        {/* Clean sweep scan line */}
+                        <div 
+                          className="absolute left-0 right-0 h-[1.5px] bg-emerald-400 shadow-sm z-20 pointer-events-none" 
+                          style={{ animation: 'scanLineSweep 2.5s infinite linear' }}
+                        />
+
+                        <div className="absolute bottom-3 inset-x-0 text-center z-20">
+                          <span className="bg-stone-950/80 backdrop-blur-md text-[9.5px] px-2.5 py-1 rounded-md text-emerald-400 font-mono tracking-wider border border-emerald-900">
+                            CAMERA VIEWPORT ACTIVE
+                          </span>
+                        </div>
+                      </div>
                     </div>
 
-                    {/* Active call to connect real camera if function is provided */}
-                    {onConnectPhone && (
-                      <div className="bg-emerald-50/50 border border-emerald-150 rounded-xl p-3 flex items-center justify-between shadow-xs">
-                        <div className="flex items-center space-x-2.5">
-                          <div className="p-2 bg-emerald-100 rounded-lg text-emerald-700 shrink-0">
-                            <Smartphone className="w-4 h-4" />
+                    {/* Manual Input controls */}
+                    <div className="md:col-span-6 space-y-4 flex flex-col justify-between">
+                      <div>
+                        <label className="block text-[11px] font-bold text-stone-850 uppercase tracking-wider font-sans">
+                          Camera Scan Assist
+                        </label>
+                        <p className="text-[11px] text-stone-500 mt-1 leading-relaxed">
+                          Aim your camera lens directly over any product's printed QR label. The system will look up the model and instantly add it to the active bill below.
+                        </p>
+
+                        {/* Camera Selector Dropdown */}
+                        {availableCameras.length > 1 && (
+                          <div className="mt-3 bg-white border border-stone-200 p-2 rounded-lg">
+                            <label className="block text-[9px] font-bold text-stone-500 uppercase tracking-widest mb-1">
+                              Camera Device Source:
+                            </label>
+                            <select 
+                              value={selectedCameraId}
+                              onChange={(e) => {
+                                setSelectedCameraId(e.target.value);
+                                setCameraError(null);
+                              }}
+                              className="w-full bg-stone-50 border border-stone-200 py-1 px-2 rounded-md text-xs text-stone-800 font-medium focus:outline-none focus:ring-1 focus:ring-stone-500 cursor-pointer"
+                            >
+                              {availableCameras.map(cam => (
+                                <option key={cam.id} value={cam.id}>
+                                  {cam.label || `Alternative Device (${cam.id.slice(0, 5)})`}
+                                </option>
+                              ))}
+                            </select>
                           </div>
-                          <div>
-                            <span className="text-[10.5px] font-semibold text-stone-800 block">External Android Scan Assist?</span>
-                            <span className="text-[10px] text-stone-500 block leading-tight">Connect phone to bypass web camera limits</span>
+                        )}
+                      </div>
+
+                      {/* Active call to connect real camera if function is provided */}
+                      {onConnectPhone && (
+                        <div className="bg-emerald-50/50 border border-emerald-150 rounded-xl p-3 flex items-center justify-between shadow-xs">
+                          <div className="flex items-center space-x-2.5">
+                            <div className="p-2 bg-emerald-100 rounded-lg text-emerald-700 shrink-0">
+                              <Smartphone className="w-4 h-4" />
+                            </div>
+                            <div>
+                              <span className="text-[10.5px] font-bold text-stone-800 block">External Android Scan Assist?</span>
+                              <span className="text-[10px] text-stone-500 block leading-tight">Connect phone to bypass web camera limits</span>
+                            </div>
                           </div>
+                          <button
+                            type="button"
+                            onClick={onConnectPhone}
+                            className="bg-stone-900 hover:bg-stone-800 text-white px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer whitespace-nowrap"
+                          >
+                            Connect Mobile
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Quick demo hotkeys */}
+                      <div className="bg-white border border-stone-200 p-2.5 rounded-xl">
+                        <span className="text-[10px] font-bold uppercase text-stone-500 block mb-1.5">Quick-Scan Simulator:</span>
+                        <div className="flex flex-wrap gap-1.5 font-sans">
+                          {products.slice(0, 4).map(p => (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => handleScannerScan(p.sku)}
+                              className="bg-stone-50 hover:bg-stone-100 text-stone-800 border border-stone-200 hover:border-stone-400 py-1 px-2 rounded font-mono text-[10px] transition-all flex items-center space-x-1 cursor-pointer"
+                              title={`Simulate Scan for SKU ${p.sku}`}
+                            >
+                              <span className="font-sans text-[8px] font-bold bg-amber-500 text-white px-1 py-0.2 rounded-sm mr-1">SCAN</span>
+                              <span>{p.sku}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Input field for manual barcode search */}
+                      <div className="flex space-x-1.5" id="pos-manual-trigger-wrapper">
+                        <div className="relative flex-1">
+                          <input
+                            type="text"
+                            placeholder="Type or paste SKU code directly..."
+                            value={manualScanInput}
+                            onChange={(e) => setManualScanInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleScannerScan(manualScanInput);
+                              }
+                            }}
+                            className="w-full pl-2.5 pr-2 py-1.5 text-xs border border-stone-250 bg-white font-mono uppercase font-bold focus:ring-1 focus:ring-stone-500 rounded-lg focus:outline-none"
+                          />
                         </div>
                         <button
                           type="button"
-                          onClick={onConnectPhone}
-                          className="bg-stone-900 hover:bg-stone-800 text-white px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all cursor-pointer whitespace-nowrap"
+                          onClick={() => handleScannerScan(manualScanInput)}
+                          className="px-3.5 py-1.5 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-lg transition-all cursor-pointer shadow-sm"
+                          title="Add to invoice"
                         >
-                          Connect Mobile
+                          Add to Bill
                         </button>
                       </div>
-                    )}
 
-                    {/* Quick demo hotkeys */}
-                    <div className="bg-white border border-stone-200 p-2.5 rounded-xl">
-                      <span className="text-[10px] font-bold uppercase text-stone-500 block mb-1.5">Quick-Scan Simulator:</span>
-                      <div className="flex flex-wrap gap-1.5 font-sans">
-                        {products.slice(0, 4).map(p => (
-                          <button
-                            key={p.id}
-                            type="button"
-                            onClick={() => handleScannerScan(p.sku)}
-                            className="bg-stone-50 hover:bg-stone-100 text-stone-800 border border-stone-200 hover:border-stone-400 py-1 px-2 rounded font-mono text-[10px] transition-all flex items-center space-x-1 cursor-pointer"
-                            title={`Simulate Scan for SKU ${p.sku}`}
-                          >
-                            <span className="font-sans text-[8px] font-bold bg-amber-500 text-white px-1 py-0.2 rounded-sm mr-1">SCAN</span>
-                            <span>{p.sku}</span>
-                          </button>
-                        ))}
-                      </div>
                     </div>
-
-                    {/* Input field for manual barcode search */}
-                    <div className="flex space-x-1.5" id="pos-manual-trigger-wrapper">
-                      <div className="relative flex-1">
-                        <input
-                          type="text"
-                          placeholder="Type or paste SKU code directly..."
-                          value={manualScanInput}
-                          onChange={(e) => setManualScanInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              handleScannerScan(manualScanInput);
-                            }
-                          }}
-                          className="w-full pl-2.5 pr-2 py-1.5 text-xs border border-stone-250 bg-white font-mono uppercase font-bold focus:ring-1 focus:ring-stone-500 rounded-lg focus:outline-none"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleScannerScan(manualScanInput)}
-                        className="px-3.5 py-1.5 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-lg transition-all cursor-pointer shadow-sm"
-                        title="Add to invoice"
-                      >
-                        Add to Bill
-                      </button>
-                    </div>
-
                   </div>
                 </div>
-              </div>
+              </>
             )}
           </div>
           
-          {/* Search, Filter Tools */}
-          <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-sm flex flex-col md:flex-row gap-3">
+          {/* Search, Filter & Product Auto-Lookup Tools */}
+          <div className="bg-white p-4.5 rounded-2xl border border-stone-200 shadow-sm flex flex-col md:flex-row gap-3">
             <div className="relative flex-1">
-              <Search className="absolute left-3.5 top-3 w-4 h-4 text-stone-400" />
+              <Search className="absolute left-3.5 top-3.5 w-4.5 h-4.5 text-stone-400" />
               <input
                 id="pos-search"
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search SKU model, marble variant, color finish..."
-                className="w-full pl-10 pr-4 py-2 text-xs border border-stone-200 rounded-xl bg-stone-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-stone-850 focus:border-stone-850 transition-colors"
+                placeholder="Type SKU code, variant name, material or ID category..."
+                className="w-full pl-11 pr-4 py-2.5 text-xs font-bold border-2 border-stone-200 rounded-xl bg-stone-50 focus:bg-white focus:outline-none focus:border-amber-500 transition-colors text-stone-900"
               />
             </div>
             
@@ -1152,11 +1295,12 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
               {subcategories.map(sub => (
                 <button
                   key={sub}
+                  type="button"
                   onClick={() => setSelectedSubcategory(sub)}
-                  className={`px-3 py-1.5 rounded-xl text-[11px] font-medium transition-all ${
+                  className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
                     selectedSubcategory === sub
-                      ? 'bg-stone-900 text-white font-semibold'
-                      : 'bg-stone-50 text-stone-600 hover:bg-stone-100'
+                      ? 'bg-amber-500 text-stone-950 font-black border-2 border-amber-400'
+                      : 'bg-stone-50 text-stone-605 border-2 border-transparent hover:bg-stone-100'
                   }`}
                 >
                   {sub}
@@ -1165,89 +1309,142 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
             </div>
           </div>
 
-          {/* Product Items Grid */}
-          <div className="bg-white rounded-2xl border border-stone-200 p-4 shadow-sm" id="pos-product-list">
-            <div className="text-xs font-bold uppercase tracking-wider text-stone-400 mb-3 font-mono">
-              Available Items ({filteredProducts.length})
-            </div>
-            
-            {filteredProducts.length === 0 ? (
-              <div className="p-12 text-center text-stone-400 text-xs">
-                <Compass className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                No matching ceramic series, fittings or tiles available in inventory.
+          {/* Product Items Smart Search Panel */}
+          <div className="bg-white rounded-2xl border border-stone-200 p-5 shadow-sm" id="pos-product-list">
+            {!searchQuery ? (
+              <div className="py-10 px-4 text-center space-y-4">
+                <div className="w-12 h-12 bg-amber-500/10 text-amber-600 rounded-full flex items-center justify-center mx-auto">
+                  <Search className="w-6 h-6 animate-pulse" />
+                </div>
+                <div className="space-y-1.5">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-stone-800">
+                    Product Lookup Registry
+                  </h4>
+                  <p className="text-xs text-stone-550 max-w-md mx-auto leading-relaxed font-medium">
+                    Please type a model name, SKU code/ID, or tile finish in the search bar above (or toggle the camera scan icon on the cart) to look up items.
+                  </p>
+                </div>
+                
+                {/* Popular Shortcuts */}
+                <div className="pt-4 border-t border-stone-100">
+                  <span className="text-[10px] font-black text-stone-400 uppercase tracking-widest block mb-2.5">
+                    🚀 Popular Ceramic SKU Shortcuts
+                  </span>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {products.slice(0, 8).map(p => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          setSearchQuery(p.sku);
+                        }}
+                        className="bg-stone-50 hover:bg-amber-50 hover:text-amber-900 hover:border-amber-300 border border-stone-200 px-3 py-2 rounded-xl text-xs font-bold text-stone-700 transition-all cursor-pointer shadow-3xs flex items-center gap-1.5"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                        <span>{p.name} ({p.sku})</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[500px] overflow-y-auto pr-1">
-                {filteredProducts.map(p => {
-                  const isOutOfStock = p.stock <= 0;
-                  const isInLowStock = p.stock > 0 && p.stock <= p.minStock;
-                  // Count in current billing cart
-                  const inCartItem = cart.find(item => item.product.id === p.id);
-                  const inCartQty = inCartItem ? inCartItem.quantity : 0;
+              <>
+                <div className="text-xs font-bold uppercase tracking-wider text-stone-400 mb-3.5 font-mono flex items-center justify-between border-b border-stone-100 pb-2">
+                  <span className="font-sans font-extrabold text-stone-800">Search Results ({filteredProducts.length})</span>
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="text-stone-400 hover:text-stone-700 font-bold text-[10px] uppercase tracking-wider bg-stone-100 hover:bg-stone-200 px-2.5 py-1 rounded-lg transition-all"
+                  >
+                    Clear Search ✕
+                  </button>
+                </div>
+                
+                {filteredProducts.length === 0 ? (
+                  <div className="py-14 text-center text-stone-400 text-xs">
+                    <Compass className="w-9 h-9 mx-auto mb-2 opacity-30" />
+                    No matching ceramic series, fittings or tiles found for "{searchQuery}".
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1">
+                    {filteredProducts.map(p => {
+                      const isOutOfStock = p.stock <= 0;
+                      const isInLowStock = p.stock > 0 && p.stock <= p.minStock;
+                      const inCartItem = cart.find(item => item.product.id === p.id);
+                      const inCartQty = inCartItem ? inCartItem.quantity : 0;
 
-                  return (
-                    <div
-                      key={p.id}
-                      onClick={() => !isOutOfStock && handleAddToBill(p)}
-                      className={`group border rounded-xl p-3 flex flex-col justify-between transition-all relative ${
-                        isOutOfStock 
-                          ? 'bg-stone-50/75 border-stone-100 opacity-65 cursor-not-allowed'
-                          : 'bg-white border-stone-200 hover:border-amber-500/70 hover:shadow-sm cursor-pointer'
-                      }`}
-                    >
-                      {/* Top Tag row */}
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <span className="text-[9px] font-mono bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded font-bold uppercase">
-                            {p.subcategory}
-                          </span>
-                          <h4 className="text-xs font-bold text-stone-900 mt-1 truncate group-hover:text-amber-600 transition-colors">
-                            {p.name}
-                          </h4>
-                          <p className="text-[10px] font-mono text-stone-500 mt-0.5">{p.sku}</p>
-                        </div>
-                        
-                        {/* Img Micro thumbnail */}
-                        <img 
-                          src={p.image} 
-                          alt="" 
-                          className="w-9 h-9 object-cover rounded-md border border-stone-100 shadow-sm"
-                          referrerPolicy="no-referrer"
-                        />
-                      </div>
+                      return (
+                        <div
+                          key={p.id}
+                          onClick={() => !isOutOfStock && handleAddToBill(p)}
+                          className={`group border rounded-xl p-3 flex flex-col md:flex-row md:items-center justify-between transition-all gap-3 relative ${
+                            isOutOfStock 
+                              ? 'bg-stone-50/75 border-stone-150 opacity-60 cursor-not-allowed'
+                              : 'bg-white border-stone-200 hover:border-amber-500 hover:bg-amber-50/5 cursor-pointer shadow-3xs'
+                          }`}
+                        >
+                          <div className="flex items-center space-x-3 min-w-0 flex-1">
+                            <img 
+                              src={p.image} 
+                              alt="" 
+                              className="w-11 h-11 object-cover rounded-lg border border-stone-150 shadow-3xs shrink-0"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center space-x-1.5 flex-wrap gap-y-0.5">
+                                <span className="text-[9px] font-mono bg-stone-100 text-stone-605 px-1.5 py-0.2 rounded font-bold uppercase">
+                                  {p.subcategory}
+                                </span>
+                                <span className="text-[9.5px] font-mono text-stone-500 font-bold">Code: {p.sku}</span>
+                              </div>
+                              <h4 className="text-xs font-bold text-stone-900 truncate mt-0.5 group-hover:text-amber-650 transition-colors">
+                                {p.name}
+                              </h4>
+                            </div>
+                          </div>
 
-                      {/* Stock Specs Footer */}
-                      <div className="mt-4 pt-2.5 border-t border-stone-100 flex items-center justify-between text-[11px]">
-                        <div>
-                          <p className="text-[9px] uppercase tracking-wider text-stone-400 font-semibold leading-none">Price Per Unit</p>
-                          <span className="font-bold text-stone-900 mt-1 inline-block">
-                            ₹{p.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}<span className="text-[10px] text-stone-400 font-normal">/{p.unit}</span>
-                          </span>
+                          <div className="flex items-center justify-between md:justify-end space-x-4 shrink-0 mt-2 md:mt-0 pt-2 md:pt-0 border-t md:border-t-0 border-stone-100">
+                            <div className="text-left md:text-right">
+                              <p className="text-[9px] uppercase tracking-wider text-stone-400 font-bold leading-none">Price</p>
+                              <span className="font-mono text-xs font-black text-stone-900 block mt-0.5">
+                                ₹{p.price.toLocaleString('en-IN')}<span className="text-[9px] text-stone-400 font-normal">/{p.unit}</span>
+                              </span>
+                            </div>
+                            
+                            <div className="text-right">
+                              <p className="text-[9px] uppercase tracking-wider text-stone-400 font-bold leading-none">Stock</p>
+                              {isOutOfStock ? (
+                                <span className="text-[9px] font-bold text-rose-500 bg-rose-50 px-1 rounded block mt-0.5">SOLD OUT</span>
+                              ) : (
+                                <span className={`font-mono text-xs font-bold block mt-[1px] ${isInLowStock ? 'text-amber-500 bg-amber-50 px-1 rounded' : 'text-stone-700'}`}>
+                                  {p.stock} {p.unit}
+                                </span>
+                              )}
+                            </div>
+                            
+                            <button
+                              type="button"
+                              className={`h-8 w-22 text-[10.5px] font-black rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 border shadow-3xs ${
+                                isOutOfStock
+                                  ? 'bg-stone-100 border-stone-200 text-stone-400 cursor-not-allowed'
+                                  : inCartQty > 0
+                                  ? 'bg-amber-500 border-amber-400 text-stone-950 font-black'
+                                  : 'bg-stone-950 border-stone-850 text-white hover:bg-stone-850 hover:border-stone-750'
+                              }`}
+                            >
+                              {inCartQty > 0 ? (
+                                <span className="uppercase text-[9px] font-black">Selected ({inCartQty})</span>
+                              ) : (
+                                <span className="uppercase text-[9px] font-black">+ Add</span>
+                              )}
+                            </button>
+                          </div>
                         </div>
-
-                        {/* Stock value */}
-                        <div className="text-right">
-                          <p className="text-[9px] uppercase tracking-wider text-stone-400 font-semibold leading-none mb-0.5">Warehouse</p>
-                          {isOutOfStock ? (
-                            <span className="text-[10px] font-bold text-red-500 bg-red-50 px-1 rounded">SOLD OUT</span>
-                          ) : (
-                            <span className={`font-mono font-bold ${isInLowStock ? 'text-amber-500 bg-amber-50 px-1 rounded' : 'text-stone-700'}`}>
-                              {p.stock} {p.unit}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Dynamic Cart Overlay badge counter */}
-                      {inCartQty > 0 && (
-                        <div className="absolute top-2 right-2 bg-amber-500 text-white font-mono text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center shadow-sm">
-                          {inCartQty}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -1257,15 +1454,88 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
           <form onSubmit={handleProcessAndPay} className="bg-white rounded-2xl border border-stone-200 p-5 shadow-sm space-y-5 flex-1 flex flex-col justify-between">
             
             <div className="space-y-4">
-              {/* Header Title count */}
-              <div className="flex items-center justify-between pb-3 border-b border-stone-100">
-                <div className="flex items-center space-x-2">
-                  <ShoppingCart className="w-4 h-4 text-amber-500" />
-                  <h3 className="text-sm font-bold text-stone-900 font-sans">Active Bill Cart</h3>
+              {/* Header Title & Mode Selector */}
+              <div className="pb-3 border-b border-stone-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <ShoppingCart className="w-4 h-4 text-amber-500" />
+                    <h3 className="text-sm font-bold text-stone-900 font-sans">Active Bill Cart</h3>
+                  </div>
+
+                  <span className="text-xs bg-stone-100 px-2 py-1 rounded-full font-mono font-bold text-stone-600">
+                    {cart.reduce((sum, item) => sum + item.quantity, 0)} Items
+                  </span>
                 </div>
-                <span className="text-xs bg-stone-100 px-2 py-0.5 rounded-full font-mono font-bold text-stone-600">
-                  {cart.reduce((sum, item) => sum + item.quantity, 0)} Items
-                </span>
+
+                {/* Showroom vs Store Billing Mode Selector */}
+                <div className="grid grid-cols-2 bg-stone-100 p-1 rounded-xl text-stone-700 text-[10px] font-black uppercase tracking-wider relative shadow-3xs border border-stone-200/50">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBillingMode('showroom');
+                      playScanBeep();
+                    }}
+                    className={`py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      billingMode === 'showroom'
+                        ? 'bg-white text-stone-950 shadow-3xs font-extrabold border-stone-150'
+                        : 'text-stone-500 hover:text-stone-850'
+                    }`}
+                  >
+                    <QrCode className="w-3.5 h-3.5 text-amber-500" />
+                    <span>🏬 Showroom POS</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBillingMode('store');
+                      setIsScannerOpen(false); // Disables scanner directly
+                      playScanBeep();
+                    }}
+                    className={`py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      billingMode === 'store'
+                        ? 'bg-stone-950 text-white shadow-3xs font-extrabold'
+                        : 'text-stone-500 hover:text-stone-850'
+                    }`}
+                  >
+                    <Smartphone className="w-3.5 h-3.5 text-amber-400" />
+                    <span>🛒 Store Counter</span>
+                  </button>
+                </div>
+
+                {/* Conditional Scanner Alert / Trigger */}
+                {billingMode === 'showroom' ? (
+                  <div className="flex items-center justify-between bg-amber-500/5 border border-amber-300/40 p-2 rounded-xl">
+                    <span className="text-[9px] text-amber-800 font-semibold uppercase tracking-wider flex items-center gap-1">
+                      📸 Crate QR Scanner Available
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsScannerOpen(!isScannerOpen);
+                        playScanBeep();
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase transition-all cursor-pointer flex items-center gap-1 border shadow-3xs ${
+                        isScannerOpen
+                          ? 'bg-amber-500 text-stone-950 border-amber-400 scale-105'
+                          : 'bg-white text-stone-800 border-stone-200 hover:bg-amber-100'
+                      }`}
+                    >
+                      <QrCode className="w-3.5 h-3.5 animate-pulse" />
+                      <span>{isScannerOpen ? 'Turn Scanner Off' : 'Open Camera'}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="bg-emerald-55/40 border border-emerald-400/20 p-2.5 rounded-xl text-center flex items-center justify-center gap-1.5">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    <span className="text-[9px] text-emerald-800 font-bold uppercase tracking-wider">
+                      ⚡ Store Mode Active (Manual cart edits with direct payment captures)
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Cart Items listing */}
@@ -1666,16 +1936,92 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                 </div>
               )}
 
-              {/* Customer Particulars Intake */}
-              <div className="pt-3 border-t border-stone-100 space-y-2.5">
-                <div className="text-[10px] font-bold text-stone-400 uppercase tracking-widest font-mono flex items-center justify-between">
-                  <span>Client & Project Particulars</span>
-                  <span className="text-[8.5px] bg-amber-100 text-amber-800 px-1 py-0.2 rounded">Ledger Connected ✓</span>
+              {/* SAVED DRAFTS DIRECTORY LAYOUT */}
+              {drafts.length > 0 && (
+                <div className="bg-stone-50 border-2 border-stone-200 p-3.5 rounded-2xl space-y-2.5 shadow-3xs" id="billing-drafts-list-container">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black text-stone-850 uppercase tracking-wider font-mono flex items-center gap-1">
+                      📂 Saved Draft Bills ({drafts.length})
+                    </span>
+                    {activeDraftId && (
+                      <span className="text-[8.5px] bg-amber-500 text-stone-950 font-extrabold px-1.5 py-0.5 rounded font-mono animate-pulse">
+                        Editing: {activeDraftId}
+                      </span>
+                    )}
+                  </div>
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                    {drafts.map((d: any) => (
+                      <div
+                        key={d.id}
+                        onClick={() => handleLoadDraft(d)}
+                        className={`p-2.5 rounded-xl border text-[11px] flex justify-between items-center transition-all cursor-pointer ${
+                          activeDraftId === d.id
+                            ? 'bg-amber-100/40 border-amber-300 text-stone-900 font-bold'
+                            : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-50'
+                        }`}
+                      >
+                        <div className="space-y-0.5 truncate pr-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-stone-900 font-bold truncate">
+                              {d.customerName || 'Untitled Client'}
+                            </span>
+                            <span className="text-[9px] text-stone-400 font-mono font-normal">
+                              ({d.cart.reduce((sum: number, i: any) => sum + i.quantity, 0)} {d.cart[0]?.product?.unit || 'items'})
+                            </span>
+                          </div>
+                          <div className="text-[9px] text-stone-500 font-mono flex items-center gap-1">
+                            <span>Phone: {d.customerPhone || 'N/A'}</span>
+                            <span>•</span>
+                            <span>{new Date(d.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteDraft(d.id, e)}
+                            className="p-1.5 text-stone-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-rose-100"
+                            title="Delete draft permanent"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {activeDraftId && (
+                    <div className="flex justify-start">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveDraftId(null);
+                          setCustomerName('');
+                          setCustomerPhone('');
+                          setCustomerAddress('');
+                          setCart([]);
+                        }}
+                        className="text-[9px] font-bold text-amber-600 hover:text-amber-800 underline uppercase tracking-wider bg-transparent p-0 cursor-pointer"
+                      >
+                        ← Clear Draft Edit & Create New Bill
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Customer Particulars Intake (Highly Highlighted, Premium Styled Container) */}
+              <div className="pt-4 pb-4 px-3.5 border-2 border-amber-300 rounded-2xl bg-gradient-to-br from-teal-500/5 via-stone-50 to-amber-500/5 space-y-3 shadow-xs relative overflow-hidden" id="pos-customer-particulars-highlight-box">
+                {/* Visual side-marker for attention */}
+                <div className="absolute top-0 left-0 w-1.5 h-full bg-amber-500" />
+                
+                <div className="text-[11px] font-black text-stone-900 uppercase tracking-widest font-sans flex items-center justify-between">
+                  <span className="flex items-center gap-1">👤 Client & Project Particulars</span>
+                  <span className="text-[8.5px] bg-amber-500 text-stone-950 font-black px-2 py-0.5 rounded uppercase font-mono tracking-wider">Ledger Connected ✓</span>
                 </div>
 
                 {/* Search existing ledger accounts picker */}
-                <div className="mt-1 relative bg-stone-100/60 p-2.5 rounded-xl border border-stone-200" id="pos-ledger-search">
-                  <span className="block text-[8.5px] font-bold text-stone-500 uppercase tracking-widest font-mono mb-1">
+                <div className="mt-1 relative bg-white/90 p-3 rounded-xl border-2 border-amber-200/60 shadow-3xs" id="pos-ledger-search">
+                  <span className="block text-[8.5px] font-black text-amber-900 uppercase tracking-widest font-mono mb-1.5 flex items-center gap-1">
                     🔍 Existing Account Lookup (Ledger Directory)
                   </span>
                   <div className="flex gap-1.5">
@@ -1688,7 +2034,7 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                         setShowLedgerDropdown(true);
                       }}
                       onFocus={() => setShowLedgerDropdown(true)}
-                      className="flex-1 px-2.5 py-1.5 text-[10.5px] border border-stone-250 bg-white rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500 font-medium"
+                      className="flex-1 px-3 py-2 text-[11px] border-2 border-stone-200 bg-white rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 font-bold text-stone-900"
                     />
                     {ledgerSearch && (
                       <button
@@ -1697,7 +2043,7 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                           setLedgerSearch('');
                           setShowLedgerDropdown(false);
                         }}
-                        className="px-2 py-1 text-[9.5px] font-bold uppercase bg-stone-250 hover:bg-stone-300 rounded text-stone-700 cursor-pointer"
+                        className="px-2.5 py-1 text-[9.5px] font-black uppercase bg-stone-200 hover:bg-stone-300 rounded-lg text-stone-700 cursor-pointer"
                       >
                         Clear
                       </button>
@@ -1714,7 +2060,7 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                         );
                         if (matching.length === 0) {
                           return (
-                            <div className="p-3 text-center text-stone-400 font-mono text-[9px] italic">
+                            <div className="p-3 text-center text-stone-405 font-mono text-[9px] italic">
                               No accounts match. Type fields below to check out as generic walk-in.
                             </div>
                           );
@@ -1769,28 +2115,28 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                     if (!match) return null;
                     const hasAdvance = match.outstanding < 0;
                     return (
-                      <div className={`mt-2 p-2 rounded-lg border flex items-center justify-between text-[9.5px] font-mono font-bold ${
+                      <div className={`mt-2.5 p-2 rounded-lg border-2 flex items-center justify-between text-[9.5px] font-mono font-bold ${
                         hasAdvance 
-                          ? 'bg-emerald-50 text-emerald-800 border-emerald-250' 
+                          ? 'bg-emerald-50 text-emerald-850 border-emerald-250' 
                           : match.outstanding > 0 
-                            ? 'bg-amber-50 text-amber-900 border-amber-250 animate-pulse' 
+                            ? 'bg-rose-50 text-rose-900 border-rose-250 animate-pulse' 
                             : 'bg-stone-50 text-stone-700 border-stone-200'
                       }`}>
                         <div className="flex items-center space-x-1">
-                          <span>👤 ACCOUNT STATUS DETECTED:</span>
+                          <span>👤 SYSTEM STATUS:</span>
                         </div>
                         <div>
                           {hasAdvance ? (
-                            <span className="bg-emerald-605 text-white px-1.5 py-0.5 rounded text-[10px] font-black">
-                              ADVANCE CREDIT AVAILABLE: ₹{Math.abs(match.outstanding).toLocaleString('en-IN')}
+                            <span className="bg-emerald-600 text-white px-2 py-0.5 rounded-md text-[10px] font-black">
+                              ADVANCE CREDIT: ₹{Math.abs(match.outstanding).toLocaleString('en-IN')}
                             </span>
                           ) : match.outstanding > 0 ? (
-                            <span className="bg-red-650 text-white px-1.5 py-0.5 rounded text-[10px] font-black">
-                              OUTSTANDING BALANCE DUE: ₹{match.outstanding.toLocaleString('en-IN')}
+                            <span className="bg-rose-600 text-white px-2 py-0.5 rounded-md text-[10px] font-black">
+                              OUTSTANDING DUE: ₹{match.outstanding.toLocaleString('en-IN')}
                             </span>
                           ) : (
-                            <span className="bg-stone-200 text-stone-850 px-1.5 py-0.5 rounded uppercase text-[8px] font-black">
-                              Cleared Accounts Good
+                            <span className="bg-stone-200 text-stone-850 px-2 py-0.5 rounded uppercase text-[8px] font-black">
+                              No Due
                             </span>
                           )}
                         </div>
@@ -1801,23 +2147,23 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                 
                 <div className="grid grid-cols-2 gap-2">
                   <div className="relative">
-                    <User className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-stone-400" />
+                    <User className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-stone-500" />
                     <input
                       type="text"
                       placeholder="Customer Name"
                       value={customerName}
                       onChange={(e) => setCustomerName(e.target.value)}
-                      className="w-full pl-8 pr-2 py-2 text-[11px] border border-stone-200 bg-stone-50 focus:bg-white rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500"
+                      className="w-full pl-8 pr-2.5 h-9 text-[11px] font-bold border-2 border-amber-200 bg-white rounded-xl focus:border-amber-400 focus:outline-none focus:ring-0 text-stone-900 shadow-3xs"
                     />
                   </div>
                   <div className="relative">
-                    <Phone className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-stone-400" />
+                    <Phone className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-stone-500" />
                     <input
                       type="text"
                       placeholder="Contact Details"
                       value={customerPhone}
                       onChange={(e) => setCustomerPhone(e.target.value)}
-                      className="w-full pl-8 pr-2 py-2 text-[11px] border border-stone-200 bg-stone-50 focus:bg-white rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500"
+                      className="w-full pl-8 pr-2.5 h-9 text-[11px] font-bold border-2 border-amber-200 bg-white rounded-xl focus:border-amber-400 focus:outline-none focus:ring-0 text-stone-900 shadow-3xs"
                     />
                   </div>
                 </div>
@@ -1828,7 +2174,7 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                     placeholder="Project Site Delivery Address (e.g. Penthouse Site Flat #4B)"
                     value={customerAddress}
                     onChange={(e) => setCustomerAddress(e.target.value)}
-                    className="w-full px-3 py-2 text-[11px] border border-stone-200 bg-stone-50 focus:bg-white rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    className="w-full px-3 h-9.5 text-[11px] font-bold border-2 border-amber-200 bg-white rounded-xl focus:border-amber-400 focus:outline-none focus:ring-0 text-stone-900 shadow-3xs"
                   />
                 </div>
               </div>
@@ -1949,28 +2295,29 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                 <span className="block text-[10px] font-bold text-stone-400 uppercase tracking-widest font-mono mb-2">
                   Settlement Method
                 </span>
-                <div className="grid grid-cols-5 gap-1">
+                <div className="grid grid-cols-5 gap-1.5" id="pos-payment-method-tiles">
                   {[
-                    { id: 'Cash', icon: Coins },
-                    { id: 'Card', icon: CreditCard },
-                    { id: 'UPI', icon: Sparkles },
-                    { id: 'Bank Transfer', icon: Landmark },
-                    { id: 'Credit', icon: Book }
+                    { id: 'Cash', icon: Coins, colorClass: 'text-emerald-500', selectedClass: 'border-emerald-600 bg-emerald-600 text-white shadow-md font-bold scale-102 transform -translate-y-0.5' },
+                    { id: 'Card', icon: CreditCard, colorClass: 'text-purple-500', selectedClass: 'border-purple-600 bg-purple-600 text-white shadow-md font-bold scale-102 transform -translate-y-0.5' },
+                    { id: 'UPI', icon: Sparkles, colorClass: 'text-amber-500', selectedClass: 'border-amber-500 bg-amber-500 text-stone-950 shadow-md font-black scale-102 transform -translate-y-0.5' },
+                    { id: 'Bank Transfer', icon: Landmark, colorClass: 'text-blue-500', selectedClass: 'border-blue-600 bg-blue-600 text-white shadow-md font-bold scale-102 transform -translate-y-0.5' },
+                    { id: 'Credit', icon: Book, colorClass: 'text-rose-500', selectedClass: 'border-rose-600 bg-rose-600 text-white shadow-md font-bold scale-102 transform -translate-y-0.5 animate-pulse' }
                   ].map(method => {
                     const IconComp = method.icon;
+                    const isSelected = paymentMethod === method.id;
                     return (
                       <button
                         key={method.id}
                         type="button"
                         onClick={() => setPaymentMethod(method.id as any)}
-                        className={`py-1.5 px-0.5 border rounded-lg flex flex-col items-center justify-center gap-1 transition-all ${
-                          paymentMethod === method.id
-                            ? 'border-stone-900 bg-stone-900 text-white shadow-sm font-semibold'
-                            : 'border-stone-200 bg-white text-stone-605 hover:bg-stone-50'
+                        className={`py-2 px-1 border-2 rounded-xl flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                          isSelected
+                            ? method.selectedClass
+                            : 'border-stone-200 bg-white text-stone-700 hover:border-stone-300 hover:bg-stone-50'
                         }`}
                       >
-                        <IconComp className="w-3.5 h-3.5" />
-                        <span className="text-[8px] text-center leading-none truncate w-full">{method.id}</span>
+                        <IconComp className={`w-4 h-4 ${isSelected ? 'text-white' : method.colorClass}`} />
+                        <span className="text-[9px] font-bold text-center leading-none truncate w-full">{method.id}</span>
                       </button>
                     );
                   })}
@@ -1983,33 +2330,37 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                 )}
               </div>
 
-              {/* Localized Part Payment / Deposited Advance/ Udhaar Setting */}
-              <div className="bg-stone-50 border border-stone-200 p-3.5 rounded-xl space-y-3 font-sans">
+              {/* Localized Part Payment / Deposited Advance/ Udhaar Setting (Color-Toned & Highly Highlighted Box) */}
+              <div className="bg-gradient-to-br from-amber-500/10 via-stone-50 to-teal-500/5 border-2 border-amber-300 rounded-2xl p-4.5 space-y-3.5 font-sans relative overflow-hidden shadow-xs" id="billing-part-payment-highlight-box">
+                {/* Visual marker */}
+                <div className="absolute top-0 left-0 w-1 h-full bg-amber-500" />
+                
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-stone-900 uppercase tracking-tight flex items-center gap-1.5">
+                  <span className="text-[11px] font-black text-stone-950 uppercase tracking-wider flex items-center gap-1.5">
                     <span>💵 {TRANSLATIONS[language].receivePartPayment}</span>
                   </span>
-                  <span className="text-[8.5px] bg-[#f59e0b]/15 text-[#b45309] font-extrabold px-1.5 py-0.5 rounded font-mono uppercase">
-                    Split Cashflow
+                  <span className="text-[8.5px] bg-amber-500 text-stone-950 font-black px-2 py-0.5 rounded uppercase tracking-wider">
+                    Udhaar Settings
                   </span>
                 </div>
                 
-                <p className="text-[9.5px] text-stone-500 leading-normal">
+                <p className="text-[10px] text-stone-600 leading-relaxed font-medium">
                   {TRANSLATIONS[language].receivePartPaymentDesc}
                 </p>
 
-                {/* Quick Terms Selector Buttons */}
-                <div className="grid grid-cols-3 gap-1.5">
+                {/* Quick Terms Selector Buttons - Highly highlighted */}
+                <div className="grid grid-cols-3 gap-2">
                   <button
                     type="button"
                     onClick={() => setPaidAmountInput('')}
-                    className={`px-2 py-1.5 text-[9px] font-bold rounded-lg border transition-all truncate uppercase ${
+                    className={`px-2 py-2.5 text-[9px] font-black rounded-xl border-2 transition-all truncate uppercase flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
                       paidAmountInput === ''
-                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-3xs'
-                        : 'bg-white text-stone-605 border-stone-200 hover:bg-stone-50'
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-md scale-102 transform -translate-y-0.5'
+                        : 'bg-white text-stone-700 border-stone-250 hover:bg-stone-50'
                     }`}
                   >
-                    🚀 {TRANSLATIONS[language].fullyPaidBtn}
+                    <span>🚀 100% Cash</span>
+                    <span className="text-[7.5px] font-bold opacity-80">({TRANSLATIONS[language].fullyPaidBtn})</span>
                   </button>
                   <button
                     type="button"
@@ -2018,32 +2369,34 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                         setPaidAmountInput(Math.round(calculatedTotals.grandTotal * 0.5).toString());
                       }
                     }}
-                    className={`px-2 py-1.5 text-[9px] font-bold rounded-lg border transition-all truncate uppercase ${
+                    className={`px-2 py-2.5 text-[9px] font-black rounded-xl border-2 transition-all truncate uppercase flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
                       paidAmountInput !== '' && parseFloat(paidAmountInput) > 0 && parseFloat(paidAmountInput) < calculatedTotals.grandTotal
-                        ? 'bg-amber-500 text-white border-amber-500 shadow-3xs'
-                        : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'
+                        ? 'bg-amber-500 text-white border-amber-505 shadow-md scale-102 transform -translate-y-0.5'
+                        : 'bg-white text-stone-700 border-stone-250 hover:bg-stone-50'
                     }`}
                   >
-                    🌗 {TRANSLATIONS[language].partPaidBtn}
+                    <span>🌗 Part Paid</span>
+                    <span className="text-[7.5px] font-bold opacity-80">({TRANSLATIONS[language].partPaidBtn})</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setPaidAmountInput('0')}
-                    className={`px-2 py-1.5 text-[9px] font-bold rounded-lg border transition-all truncate uppercase ${
+                    className={`px-2 py-2.5 text-[9px] font-black rounded-xl border-2 transition-all truncate uppercase flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
                       paidAmountInput === '0'
-                        ? 'bg-red-500 text-white border-red-500 shadow-3xs'
-                        : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'
+                        ? 'bg-rose-600 text-white border-rose-600 shadow-md scale-102 transform -translate-y-0.5'
+                        : 'bg-white text-stone-700 border-stone-250 hover:bg-stone-50'
                     }`}
                   >
-                    📖 {TRANSLATIONS[language].allDueBtn}
+                    <span>📖 Full Udhaar</span>
+                    <span className="text-[7.5px] font-bold opacity-80">({TRANSLATIONS[language].allDueBtn})</span>
                   </button>
                 </div>
 
-                {/* Amount input block */}
-                <div className="space-y-2 pt-1 border-t border-stone-150/60">
+                {/* Amount input block - enhanced feedback */}
+                <div className="space-y-2 pt-1 border-t border-amber-200">
                   <div className="flex items-center gap-1.5">
                     <div className="relative flex-1">
-                      <span className="absolute left-2.5 top-1.5 text-xs text-stone-400 font-mono">₹</span>
+                      <span className="absolute left-3 top-2 text-xs text-stone-500 font-bold font-mono">₹</span>
                       <input
                         type="number"
                         min="0"
@@ -2052,14 +2405,14 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                         placeholder={`Paid amount... (e.g. ₹${Math.ceil(calculatedTotals.grandTotal).toLocaleString('en-IN')})`}
                         value={paidAmountInput}
                         onChange={(e) => setPaidAmountInput(e.target.value)}
-                        className="w-full h-8 pl-6 pr-2 text-xs font-mono font-bold bg-white border border-stone-250 rounded focus:outline-none focus:ring-1 focus:ring-amber-500"
+                        className="w-full h-9 pl-6.5 pr-2.5 text-xs font-mono font-bold bg-white border-2 border-amber-300 rounded-xl focus:outline-none focus:ring-1 focus:ring-amber-500 text-stone-900 shadow-3xs"
                       />
                     </div>
                   </div>
 
                   {/* Quick percentage helper buttons if choosing split payment */}
                   {paidAmountInput !== '' && parseFloat(paidAmountInput) < calculatedTotals.grandTotal && (
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1.5 bg-white/85 p-1.5 rounded-xl border border-stone-200">
                       <span className="text-[8px] text-stone-400 font-bold uppercase tracking-wider mr-1">Ratios:</span>
                       {[0.25, 0.50, 0.75].map((pct) => {
                         const calculatedAmt = Math.round(calculatedTotals.grandTotal * pct);
@@ -2068,7 +2421,7 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                             key={pct}
                             type="button"
                             onClick={() => setPaidAmountInput(calculatedAmt.toString())}
-                            className="bg-white hover:bg-stone-100 border border-stone-200 px-1.5 py-0.5 rounded text-[8.5px] font-mono text-stone-600 transition-all font-semibold"
+                            className="bg-white hover:bg-stone-100 border border-stone-200 px-2 py-0.5 rounded text-[8.5px] font-mono text-stone-700 transition-all font-bold cursor-pointer"
                           >
                             {pct * 100}% (₹{calculatedAmt.toLocaleString('en-IN')})
                           </button>
@@ -2078,59 +2431,84 @@ export default function BillingSystem({ products, language, onUpdateStock, onCon
                   )}
                 </div>
 
-                {/* Ledger ledger / balance due visual ledger impact status display */}
-                <div className="pt-2 flex flex-col gap-1 text-[10.5px] font-mono leading-none border-t border-stone-200">
-                  <div className="flex justify-between text-emerald-700">
-                    <span>{TRANSLATIONS[language].paidAmountLabel}:</span>
-                    <span className="font-black">₹{actualPaidAmount.toLocaleString('en-IN')}</span>
+                {/* Ledger ledger / balance due visual ledger impact status display (Outstanding Highlights) */}
+                <div className="pt-2.5 flex flex-col gap-1.5 text-[11px] font-mono border-t border-amber-200">
+                  <div className="flex justify-between items-center text-emerald-800 bg-emerald-55/40 px-2.5 py-1.5 rounded-lg border border-emerald-100 font-sans">
+                    <span className="font-bold">{TRANSLATIONS[language].paidAmountLabel} (Jama):</span>
+                    <span className="font-extrabold font-mono text-xs">₹{actualPaidAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                   </div>
-                  {calculatedDueAmount > 0 && (
-                    <div className="flex justify-between text-red-600">
-                      <span>{TRANSLATIONS[language].remainingDueLabel}:</span>
-                      <span className="font-extrabold animate-pulse">₹{calculatedDueAmount.toLocaleString('en-IN')}</span>
+                  {calculatedDueAmount > 0 ? (
+                    <div className="flex justify-between items-center text-red-800 bg-red-105/50 px-2.5 py-2 rounded-lg border-2 border-red-200 font-sans animate-pulse">
+                      <span className="font-black text-red-700">Remaining Due (Udhaar / Baqaya):</span>
+                      <span className="font-black font-mono text-xs">₹{calculatedDueAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  ) : (
+                    <div className="flex justify-between items-center text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 font-sans">
+                      <span className="font-bold">Outstanding Due:</span>
+                      <span className="text-[10px] font-black uppercase bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded">
+                        Full Cash Paid ✔
+                      </span>
                     </div>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Calculations breakdown and Process receipt button */}
+            {/* Calculations breakdown and Process receipt button with pristine visibility */}
             <div className="pt-4 border-t border-stone-150 space-y-3.5">
-              <div className="space-y-1.5 font-mono text-[11.5px] text-stone-600 bg-stone-50 p-2.5 rounded-xl border border-stone-100">
-                <div className="flex justify-between">
-                  <span>Subtotal:</span>
-                  <span className="text-stone-900">₹{calculatedTotals.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              <div className="space-y-2 font-mono text-[12px] text-stone-700 bg-stone-900 text-stone-200 p-3.5 rounded-2xl border-2 border-stone-950 shadow-sm leading-relaxed" id="billing-summary-ticket">
+                <div className="flex justify-between text-stone-300">
+                  <span>Subtotal Amount:</span>
+                  <span className="font-semibold text-white">₹{calculatedTotals.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
                 {discountPercent > 0 && (
-                  <div className="flex justify-between text-emerald-600">
-                    <span>Discount ({discountPercent}%):</span>
-                    <span>-₹{calculatedTotals.discountAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  <div className="flex justify-between text-emerald-400">
+                    <span>Discount Deduction ({discountPercent}%):</span>
+                    <span className="font-semibold">-₹{calculatedTotals.discountAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                 )}
                 {gstPercent > 0 && (
-                  <div className="flex justify-between">
-                    <span>GST/Sales Tax ({gstPercent}%):</span>
-                    <span className="text-stone-900">+₹{calculatedTotals.taxAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  <div className="flex justify-between text-stone-300">
+                    <span>GST / Sales Tax ({gstPercent}%):</span>
+                    <span className="font-semibold text-white">+₹{calculatedTotals.taxAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                 )}
-                <div className="flex justify-between pt-1.5 border-t border-stone-200/60 font-sans text-xs font-bold text-stone-950">
-                  <span className="text-xs">Final Billed Total:</span>
-                  <span className="text-sm font-mono text-amber-600">₹{calculatedTotals.grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <div className="flex justify-between pt-2.5 border-t border-stone-800 font-sans text-xs font-black text-white">
+                  <span className="text-xs uppercase tracking-wider text-amber-400">Final Billed Total:</span>
+                  <span className="text-base font-mono text-amber-400 font-black">₹{calculatedTotals.grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={cart.length === 0}
-                className={`w-full py-3 rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center space-x-2 cursor-pointer ${
-                  cart.length === 0
-                    ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed shadow-none'
-                    : 'bg-stone-950 hover:bg-stone-900 text-white hover:shadow-lg'
-                }`}
-              >
-                <FileText className="w-4 h-4 text-amber-400" />
-                <span>Issue POS Invoice & Deduct Inventory</span>
-              </button>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={handleSaveAsDraft}
+                  disabled={cart.length === 0}
+                  className={`py-3 rounded-xl text-xs font-bold transition-all border flex items-center justify-center space-x-1.5 cursor-pointer ${
+                    cart.length === 0
+                      ? 'bg-stone-50 text-stone-300 border-stone-200 cursor-not-allowed shadow-none'
+                      : activeDraftId
+                      ? 'bg-amber-50 hover:bg-amber-100 text-stone-900 border-amber-300 hover:shadow-3xs'
+                      : 'bg-stone-55/80 hover:bg-stone-100 text-stone-750 border-stone-200 hover:shadow-3xs'
+                  }`}
+                >
+                  <Save className="w-4 h-4 text-amber-500" />
+                  <span>{activeDraftId ? 'Update Draft' : 'Save Draft'}</span>
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={cart.length === 0}
+                  className={`py-3 rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center space-x-1.5 cursor-pointer ${
+                    cart.length === 0
+                      ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed shadow-none'
+                      : 'bg-stone-950 hover:bg-stone-900 text-white hover:shadow-lg'
+                  }`}
+                >
+                  <FileText className="w-4 h-4 text-amber-400" />
+                  <span>{activeDraftId ? 'Finalize & Pay' : 'Issue POS Bill'}</span>
+                </button>
+              </div>
             </div>
 
           </form>
